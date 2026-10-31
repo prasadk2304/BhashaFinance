@@ -1,10 +1,11 @@
 "use client";
 
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useMemo } from "react";
 import { Product, TurnResponse, Transaction } from "@/types";
 import { DEMO_SCENARIOS } from "@/lib/demoScenarios";
 import {
   fetchProducts,
+  fetchSupportedLanguages,
   createSession,
   sendTurnMessage,
   confirmSession,
@@ -23,29 +24,49 @@ export default function Home() {
   const [products, setProducts] = useState<Product[]>([]);
   const [loadingProducts, setLoadingProducts] = useState(true);
   const [activeSession, setActiveSession] = useState<TurnResponse | null>(null);
-  const [selectedLanguage, setSelectedLanguage] = useState("mr");
+  const [supportedLanguages, setSupportedLanguages] = useState<Record<string, string>>({
+    "mr-IN": "मराठी",
+    "hi-IN": "हिन्दी",
+    "en-IN": "English",
+  });
+  const [selectedLanguage, setSelectedLanguage] = useState("mr-IN");
   const [customerId, setCustomerId] = useState("CUST-1001");
   const [customerTransactions, setCustomerTransactions] = useState<Transaction[]>([]);
   const [isThinking, setIsThinking] = useState(false);
   const [isConfirming, setIsConfirming] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [calmVoiceNotice, setCalmVoiceNotice] = useState<string | null>(null);
+  const [pendingTurn, setPendingTurn] = useState<TurnResponse | null>(null);
+  const [editableTranscript, setEditableTranscript] = useState<string | null>(null);
   const [showTransactionsModal, setShowTransactionsModal] = useState(false);
   const [showAgentModal, setShowAgentModal] = useState(false);
   const [createdTicketId, setCreatedTicketId] = useState<string | null>(null);
   const [confirmedReferenceId, setConfirmedReferenceId] = useState<string | undefined>(undefined);
 
-  // Load initial product catalog and mock customer transactions
+  // Load initial product catalog, languages, and mock customer transactions
   useEffect(() => {
     async function load() {
       try {
         setLoadingProducts(true);
-        const [prodData, custData] = await Promise.all([
+        const [prodData, custData, langsData] = await Promise.all([
           fetchProducts(),
           fetchCustomerTransactions(customerId).catch(() => ({ customer: null, transactions: [] })),
+          fetchSupportedLanguages().catch(() => ({
+            "mr-IN": "मराठी",
+            "hi-IN": "हिन्दी",
+            "en-IN": "English",
+          })),
         ]);
         setProducts(prodData);
         if (custData && custData.transactions) {
           setCustomerTransactions(custData.transactions);
+        }
+        if (langsData && Object.keys(langsData).length > 0) {
+          const map = langsData as Record<string, string>;
+          setSupportedLanguages(map);
+          if (!map[selectedLanguage]) {
+            setSelectedLanguage("mr-IN");
+          }
         }
       } catch (err: any) {
         setError("Unable to connect to BhashaFinance backend. Ensure FastAPI server is running on :8000.");
@@ -58,6 +79,9 @@ export default function Home() {
 
   const handleStartJourney = async (journeyId: string) => {
     setError(null);
+    setCalmVoiceNotice(null);
+    setPendingTurn(null);
+    setEditableTranscript(null);
     setCreatedTicketId(null);
     setConfirmedReferenceId(undefined);
     try {
@@ -75,6 +99,9 @@ export default function Home() {
     const scenario = DEMO_SCENARIOS[journeyId];
     if (!scenario) return;
     setError(null);
+    setCalmVoiceNotice(null);
+    setPendingTurn(null);
+    setEditableTranscript(null);
     setCreatedTicketId(null);
     setConfirmedReferenceId(undefined);
     // Deep copy seedData
@@ -85,6 +112,9 @@ export default function Home() {
   const handleSendMessage = async (text: string) => {
     if (!activeSession || isThinking) return;
     setError(null);
+    setCalmVoiceNotice(null);
+    setPendingTurn(null);
+    setEditableTranscript(null);
     try {
       setIsThinking(true);
       const updated = await sendTurnMessage(activeSession.session_id, {
@@ -102,6 +132,7 @@ export default function Home() {
   const handleSendAudio = async (audioBlob: Blob) => {
     if (!activeSession || isThinking) return;
     setError(null);
+    setCalmVoiceNotice(null);
     try {
       setIsThinking(true);
       const updated = await sendTurnMessage(activeSession.session_id, {
@@ -109,12 +140,59 @@ export default function Home() {
         languageCode: selectedLanguage,
         synthesizeSpeech: true,
       });
-      setActiveSession(updated);
+
+      // Show returned transcript in editable field so user can correct and resubmit before state updates
+      if (updated.transcript) {
+        setPendingTurn(updated);
+        setEditableTranscript(updated.transcript);
+      } else {
+        setActiveSession(updated);
+      }
     } catch (err: any) {
-      setError(err.message || "Voice turn failed");
+      if (err.status === 503 || err.fallback === "text") {
+        // If STT returns 503 with fallback "text", switch to the text input and show one calm line:
+        // "Voice isn't available right now. You can type instead."
+        setCalmVoiceNotice("Voice isn't available right now. You can type instead.");
+      } else {
+        setError(err.message || "Voice turn failed");
+      }
     } finally {
       setIsThinking(false);
     }
+  };
+
+  const handleResubmitTranscript = async (correctedText: string) => {
+    setPendingTurn(null);
+    setEditableTranscript(null);
+    await handleSendMessage(correctedText);
+  };
+
+  const handleAcceptTranscript = () => {
+    if (pendingTurn) {
+      setActiveSession(pendingTurn);
+      setPendingTurn(null);
+      setEditableTranscript(null);
+    }
+  };
+
+  // Detect any inferred amount in the state for the Read-Back Card
+  const inferredField = useMemo(() => {
+    if (!activeSession?.state?.fields) return null;
+    for (const [name, f] of Object.entries(activeSession.state.fields)) {
+      if (f.status === "inferred" && f.value !== null && f.value !== undefined) {
+        return { name, value: f.value, label: f.label || name };
+      }
+    }
+    return null;
+  }, [activeSession]);
+
+  const handleConfirmInferred = async (fieldName: string, value: any) => {
+    // Yes marks the field confirmed
+    await handleSendMessage(`Yes, ₹${Number(value).toLocaleString("en-IN")} is correct`);
+  };
+
+  const handleEditInferred = async (fieldName: string, newValue: any) => {
+    await handleSendMessage(String(newValue));
   };
 
   const handleGrantConsent = async () => {
@@ -178,13 +256,16 @@ export default function Home() {
   const handleReset = () => {
     setActiveSession(null);
     setError(null);
+    setCalmVoiceNotice(null);
+    setPendingTurn(null);
+    setEditableTranscript(null);
     setCreatedTicketId(null);
     setConfirmedReferenceId(undefined);
   };
 
   return (
     <div className="min-h-screen flex flex-col bg-[#F5F7FA] text-[#1B2A41]">
-      {/* Top Bar with Guarded Language Selector and Agent Handoff */}
+      {/* Top Bar with Language Selector from GET /api/languages and Agent Handoff */}
       <TopBar
         selectedLanguage={selectedLanguage}
         onLanguageChange={setSelectedLanguage}
@@ -193,6 +274,7 @@ export default function Home() {
         onLoadScenario={handleLoadScenario}
         onViewTransactions={() => setShowTransactionsModal(true)}
         onTalkToAgent={handleAgentHandoff}
+        supportedLanguages={supportedLanguages}
       />
 
       {/* Global Error Notice */}
@@ -233,9 +315,18 @@ export default function Home() {
                 onSendMessage={handleSendMessage}
                 onSendAudio={handleSendAudio}
                 audioBase64={activeSession.audio_base64}
+                replyAudioUrl={activeSession.reply_audio_url}
                 targetFieldWhy={activeSession.target_field_why}
                 targetFieldName={activeSession.target_field}
                 onTalkToAgent={handleAgentHandoff}
+                inferredField={inferredField}
+                onConfirmInferred={handleConfirmInferred}
+                onEditInferred={handleEditInferred}
+                editableTranscript={editableTranscript}
+                onResubmitTranscript={handleResubmitTranscript}
+                onAcceptTranscript={handleAcceptTranscript}
+                calmNotice={calmVoiceNotice}
+                onDismissCalmNotice={() => setCalmVoiceNotice(null)}
               />
             </div>
 

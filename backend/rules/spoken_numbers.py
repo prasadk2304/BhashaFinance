@@ -7,6 +7,8 @@ in English, Hindi (hi-IN), and Marathi (mr-IN) before Text-to-Speech synthesis.
 import re
 from typing import Optional
 
+from backend.rules.parser import normalize_devanagari_digits
+
 # English number maps
 ONES_EN = {
     0: "", 1: "one", 2: "two", 3: "three", 4: "four", 5: "five",
@@ -212,35 +214,68 @@ def convert_amounts_in_text(text: str, language_code: str = "en-IN") -> str:
     """
     Replaces all monetary figures in text with spoken words before TTS.
     Examples:
-    - "₹80,000" -> "eighty thousand rupees" / "अस्सी हज़ार रुपये" / "ऐंशी हजार रुपये"
+    - "80000" -> "eighty thousand rupees" / "ऐंशी हजार रुपये" / "अस्सी हज़ार रुपये"
+    - "₹80,000" -> "eighty thousand rupees"
     - "Rs. 1,50,000" -> "one lakh fifty thousand rupees"
-    - "Rs 4,500.00" -> "four thousand five hundred rupees"
+    - "80k" -> "eighty thousand rupees"
+    - "1.5 lakh" -> "one lakh fifty thousand rupees"
+    - "८०,००० रुपये" -> "ऐंशी हजार रुपये"
     """
     if not text:
         return text
 
-    # Pattern matches ₹80,000 or Rs. 80,000 or Rs 80,000 or ₹1.5 lakh
-    currency_pattern = re.compile(
-        r"(?:₹|rs\.?|inr)\s*([0-9]{1,3}(?:,[0-9]{2,3})*(?:\.[0-9]+)?|[0-9]+(?:\.[0-9]+)?)(?:\s*(lakh|crore|k)\b)?",
-        re.IGNORECASE
+    # Normalize Devanagari numerals (०-९) to ASCII
+    normalized = normalize_devanagari_digits(text)
+
+    multipliers = {
+        "k": 1000.0,
+        "thousand": 1000.0,
+        "thousands": 1000.0,
+        "hazar": 1000.0,
+        "hazaar": 1000.0,
+        "हजार": 1000.0,
+        "हज़ार": 1000.0,
+        "lakh": 100000.0,
+        "lakhs": 100000.0,
+        "lac": 100000.0,
+        "lacs": 100000.0,
+        "लाख": 100000.0,
+        "crore": 10000000.0,
+        "crores": 10000000.0,
+        "cr": 10000000.0,
+        "कोटी": 10000000.0,
+        "करोड़": 10000000.0,
+    }
+
+    # Matches numbers with optional prefix (₹, rs, inr), optional multiplier unit, and optional suffix (rupees, रुपये, रु)
+    pattern = re.compile(
+        r"(?:(?P<pfx>₹|rs\.?|inr)\s*)?(?P<num>[0-9]+(?:,[0-9]+)*(?:\.[0-9]+)?)\s*(?P<unit>lakh|crore|cr|k|thousand|lacs|lac|हजार|हज़ार|लाख|कोटी|करोड़)?(?:\s*(?P<sfx>rupees|रुपये|रु\.?))?",
+        re.IGNORECASE,
     )
 
     def replace_match(match: re.Match) -> str:
-        raw_num = match.group(1).replace(",", "")
-        multiplier = (match.group(2) or "").lower()
+        pfx = match.group("pfx")
+        num_str = match.group("num")
+        unit = match.group("unit")
+        sfx = match.group("sfx")
+
+        raw_num = num_str.replace(",", "")
         try:
             val = float(raw_num)
-            if multiplier == "crore":
-                val *= 10000000
-            elif multiplier == "lakh":
-                val *= 100000
-            elif multiplier == "k":
-                val *= 1000
-            return format_amount_to_words(val, language_code)
         except (ValueError, TypeError):
             return match.group(0)
 
-    converted = currency_pattern.sub(replace_match, text)
+        # Only treat as monetary amount if it has a currency marker, multiplier, comma, or is >= 1000
+        is_amount = bool(pfx or sfx or unit or "," in num_str or val >= 1000)
+        if not is_amount:
+            return match.group(0)
+
+        if unit and unit.lower() in multipliers:
+            val *= multipliers[unit.lower()]
+
+        return format_amount_to_words(val, language_code)
+
+    converted = pattern.sub(replace_match, normalized)
 
     # Clean up isolated symbols if any remain
     converted = re.sub(r"₹\s*", "rupees ", converted)

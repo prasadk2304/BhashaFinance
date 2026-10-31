@@ -1,36 +1,41 @@
+"""
+Sarvam AI voice and language service for BhashaFinance AI.
+Uses the official `sarvamai` SDK:
+- STT (speech_to_text.transcribe) with model from SARVAM_STT_MODEL (default saaras:v4)
+- TTS (text_to_speech.convert_stream) with model from SARVAM_TTS_MODEL (default bulbul:v4-flash)
+- Translation (text.translate) with model from SARVAM_TRANSLATE_MODEL (default mayura:v1)
+- Disk caching in backend/cache/ by sha256(text|lang|speaker|model)
+- Strict security: Never logs audio, transcripts, or API keys.
+"""
+
 import base64
 import hashlib
 import json
 import logging
+import os
 from pathlib import Path
-from typing import Optional, Dict, Any
-import httpx
+import tempfile
+import time
+from typing import Any, Dict, Iterator, Optional, Union
 from pydantic import BaseModel
+
+try:
+    from sarvamai import SarvamAI
+except ImportError:
+    SarvamAI = None
 
 from backend.config import settings
 from backend.rules.spoken_numbers import convert_amounts_in_text
 
 logger = logging.getLogger(__name__)
 
-SARVAM_BASE_URL = "https://api.sarvam.ai"
-CACHE_DIR = Path(__file__).parent / "cache"
+CACHE_DIR = Path(__file__).resolve().parent / "cache"
 CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
-# Standard BCP-47 mappings for supported languages
-LANG_CODE_MAP = {
-    "en": "en-IN",
-    "hi": "hi-IN",
-    "mr": "mr-IN",
-    "en-in": "en-IN",
-    "hi-in": "hi-IN",
-    "mr-in": "mr-IN",
-}
 
-LANG_DISPLAY_NAMES = {
-    "en-IN": "English",
-    "hi-IN": "Hindi (हिंदी)",
-    "mr-IN": "Marathi (मराठी)",
-}
+class SarvamUnavailable(Exception):
+    """Raised when Sarvam AI service fails, times out, or is unavailable after retries."""
+    pass
 
 
 class SttResponse(BaseModel):
@@ -42,14 +47,21 @@ class SttResponse(BaseModel):
     detected_language: Optional[str] = None
     confirmation_prompt: Optional[str] = None
 
+    def __getitem__(self, item: str):
+        return getattr(self, item)
+
 
 class TtsResponse(BaseModel):
     audio_base64: Optional[str] = None
-    format: str = "wav"
+    file_path: Optional[str] = None
+    format: str = "mp3"
     is_fallback: bool = False
     error: Optional[str] = None
     cached: bool = False
     spoken_text: Optional[str] = None
+
+    def __getitem__(self, item: str):
+        return getattr(self, item)
 
 
 def generate_mock_wav_base64() -> str:
@@ -57,7 +69,6 @@ def generate_mock_wav_base64() -> str:
     Generates a minimal valid 44-byte PCM WAV header for synthetic playback
     in offline/test environments when Sarvam API is unreachable.
     """
-    # 44-byte valid RIFF/WAVE header with 0 data samples
     wav_header = (
         b"RIFF\x24\x00\x00\x00WAVEfmt \x10\x00\x00\x00\x01\x00\x01\x00"
         b"\x44\xac\x00\x00\x88\x58\x01\x00\x02\x00\x10\x00data\x00\x00\x00\x00"
@@ -66,230 +77,345 @@ def generate_mock_wav_base64() -> str:
 
 
 class SarvamService:
-    def __init__(self, api_key: Optional[str] = None):
-        # Keep API key strictly server-side; NEVER expose to frontend
+    def __init__(
+        self,
+        api_key: Optional[str] = None,
+        stt_model: Optional[str] = None,
+        tts_model: Optional[str] = None,
+        translate_model: Optional[str] = None,
+        speaker: Optional[str] = None,
+        default_language: Optional[str] = None,
+    ):
         self.api_key = api_key or settings.sarvam_api_key
-        self.stt_model = "saarika:v2"
-        self.tts_model = "bulbul:v3"
+        self.stt_model = stt_model or settings.sarvam_stt_model
+        self.tts_model = tts_model or settings.sarvam_tts_model
+        self.translate_model = translate_model or settings.sarvam_translate_model
+        self.speaker = speaker or settings.sarvam_tts_speaker
+        self.default_language = default_language or settings.default_language
+        self._client = None
 
     @property
     def is_configured(self) -> bool:
         return bool(self.api_key and len(self.api_key.strip()) > 5)
 
-    def normalize_language_code(self, lang_code: Optional[str]) -> str:
-        """Normalizes language string to BCP-47 tag or returns 'unknown'."""
-        if not lang_code:
-            return "unknown"
-        clean = lang_code.strip().lower()
-        return LANG_CODE_MAP.get(clean, clean if "-" in clean else "unknown")
+    def get_client(self):
+        """Returns initialized SarvamAI client or raises SarvamUnavailable."""
+        if not self.is_configured:
+            raise SarvamUnavailable("Sarvam API key is not configured.")
+        if self._client is None:
+            if SarvamAI is None:
+                raise SarvamUnavailable("sarvamai SDK is not installed.")
+            self._client = SarvamAI(api_subscription_key=self.api_key)
+        return self._client
 
-    def _get_cache_key(self, text: str, language_code: str, voice: str, model: str) -> str:
-        raw_key = f"{text.strip()}::{language_code}::{voice}::{model}"
+    def set_client(self, client: Any):
+        """Allows injecting a mocked client for testing."""
+        self._client = client
+
+    def get_tts_cache_key(self, text: str, lang: str, speaker: str, model: str) -> str:
+        raw_key = f"{text.strip()}|{lang.strip()}|{speaker.strip()}|{model.strip()}"
         return hashlib.sha256(raw_key.encode("utf-8")).hexdigest()
+
+    def stt(self, path: Union[str, Path], lang: Optional[str] = None) -> str:
+        """
+        Transcribes audio file at path using Sarvam Speech-to-Text SDK.
+        client.speech_to_text.transcribe(file=f, model=STT_MODEL, language_code=lang, mode="transcribe", sample_rate=16000)
+        Returns response.transcript.
+        Rule: Timeout, one retry, then raise SarvamUnavailable. Never log audio, transcripts, or keys.
+        """
+        target_lang = lang or self.default_language
+        client = self.get_client()
+
+        file_path = Path(path)
+        if not file_path.exists():
+            raise FileNotFoundError(f"Audio file not found: {file_path}")
+
+        last_err = None
+        for attempt in range(2):
+            try:
+                with open(file_path, "rb") as f:
+                    # Support both SDK argument styles (sample_rate if supported)
+                    try:
+                        response = client.speech_to_text.transcribe(
+                            file=f,
+                            model=self.stt_model,
+                            language_code=target_lang,
+                            mode="transcribe",
+                            sample_rate=16000,
+                        )
+                    except TypeError:
+                        f.seek(0)
+                        response = client.speech_to_text.transcribe(
+                            file=f,
+                            model=self.stt_model,
+                            language_code=target_lang,
+                            mode="transcribe",
+                        )
+
+                # Extract transcript safely from response
+                transcript = getattr(response, "transcript", None)
+                if transcript is None and isinstance(response, dict):
+                    transcript = response.get("transcript")
+                if transcript is not None:
+                    return str(transcript).strip()
+
+                raise ValueError("Response missing transcript field")
+            except Exception as e:
+                last_err = e
+                # Security: NEVER log transcripts, audio, or keys!
+                logger.warning("Sarvam STT attempt %d failed (%s)", attempt + 1, type(e).__name__)
+                if attempt == 0:
+                    time.sleep(0.5)
+                    continue
+
+        raise SarvamUnavailable(f"Sarvam STT failed after 1 retry: {type(last_err).__name__}")
+
+    def tts(self, text: str, lang: Optional[str] = None) -> Path:
+        """
+        Synthesizes text to speech using Sarvam Text-to-Speech SDK.
+        client.text_to_speech.convert_stream(text=..., target_language_code=lang, speaker=SPEAKER, model=TTS_MODEL, pace=1, speech_sample_rate=24000)
+        Handles both bytes and iterator-of-bytes responses.
+        Caches by sha256(text|lang|speaker|model) in backend/cache/ and returns the cached file if it exists.
+        Returns path to .mp3 file.
+        Rule: Timeout, one retry, then raise SarvamUnavailable. Never log audio, transcripts, or keys.
+        """
+        if not text:
+            raise ValueError("Text cannot be empty for TTS.")
+
+        target_lang = lang or self.default_language
+        # 1. Check disk cache first: return immediately if present
+        cache_key = self.get_tts_cache_key(text, target_lang, self.speaker, self.tts_model)
+        cache_file = CACHE_DIR / f"{cache_key}.mp3"
+
+        if cache_file.exists() and cache_file.stat().st_size > 0:
+            return cache_file
+
+        client = self.get_client()
+        last_err = None
+
+        for attempt in range(2):
+            try:
+                # Handle target_language_code vs language_code parameter
+                try:
+                    res = client.text_to_speech.convert_stream(
+                        text=text,
+                        target_language_code=target_lang,
+                        speaker=self.speaker,
+                        model=self.tts_model,
+                        pace=1,
+                        speech_sample_rate=24000,
+                    )
+                except TypeError:
+                    res = client.text_to_speech.convert_stream(
+                        text=text,
+                        language_code=target_lang,
+                        speaker=self.speaker,
+                        model=self.tts_model,
+                        pace=1,
+                        speech_sample_rate=24000,
+                    )
+
+                # Handle both bytes and iterator-of-bytes responses
+                if isinstance(res, (bytes, bytearray)):
+                    audio_bytes = bytes(res)
+                elif hasattr(res, "__iter__"):
+                    audio_bytes = b"".join(res)
+                else:
+                    audio_bytes = bytes(res)
+
+                if not audio_bytes:
+                    raise ValueError("Received empty audio stream from TTS.")
+
+                # Persist to disk cache
+                cache_file.write_bytes(audio_bytes)
+                return cache_file
+
+            except Exception as e:
+                last_err = e
+                # Security: NEVER log text, audio, or keys!
+                logger.warning("Sarvam TTS attempt %d failed (%s)", attempt + 1, type(e).__name__)
+                if attempt == 0:
+                    time.sleep(0.5)
+                    continue
+
+        raise SarvamUnavailable(f"Sarvam TTS failed after 1 retry: {type(last_err).__name__}")
+
+    def translate(self, text: str, src: str, tgt: str) -> str:
+        """
+        Translates text from src language to tgt language using Sarvam Translation SDK.
+        client.text.translate(input=..., source_language_code=..., target_language_code=..., model=TRANSLATE_MODEL, numerals_format="international", mode="formal")
+        Rule: Use it ONLY for display text (review screen), NEVER in the extraction path.
+        Rule: Timeout, one retry, then raise SarvamUnavailable. Never log audio, transcripts, or keys.
+        """
+        if not text:
+            return ""
+
+        if src == tgt:
+            return text
+
+        client = self.get_client()
+        last_err = None
+
+        for attempt in range(2):
+            try:
+                response = client.text.translate(
+                    input=text,
+                    source_language_code=src,
+                    target_language_code=tgt,
+                    model=self.translate_model,
+                    numerals_format="international",
+                    mode="formal",
+                )
+
+                translated = getattr(response, "translated_text", None)
+                if translated is None and isinstance(response, dict):
+                    translated = response.get("translated_text")
+                if translated is not None:
+                    return str(translated).strip()
+
+                raise ValueError("Response missing translated_text")
+
+            except Exception as e:
+                last_err = e
+                # Security: NEVER log text or keys!
+                logger.warning("Sarvam translate attempt %d failed (%s)", attempt + 1, type(e).__name__)
+                if attempt == 0:
+                    time.sleep(0.5)
+                    continue
+
+        raise SarvamUnavailable(f"Sarvam translate failed after 1 retry: {type(last_err).__name__}")
+
+    # --------------------------------------------------------------------------
+    # Backward-Compatible Helper Methods for Turns
+    # --------------------------------------------------------------------------
 
     async def speech_to_text(
         self,
         audio_bytes: bytes,
         filename: str = "audio.wav",
-        language_code: str = "unknown",
+        language_code: str = "mr-IN",
     ) -> SttResponse:
         """
-        Transcribes audio using Sarvam STT API with model 'saarika:v2'.
-        Supports explicit language from selector or auto-detect with confirmation prompt.
-        Falls back gracefully to text fallback if key is missing or request fails.
+        Convenience wrapper that converts audio bytes to tempfile and runs stt().
+        Returns SttResponse with transcript and language_code.
         """
-        normalized_lang = self.normalize_language_code(language_code)
-
         if not self.is_configured:
-            logger.info("Sarvam API key not configured; STT using text fallback.")
             return SttResponse(
                 transcript="",
-                language_code=normalized_lang if normalized_lang != "unknown" else "en-IN",
+                language_code=language_code,
                 is_fallback=True,
                 error="Sarvam API key not configured. Please use text input fallback.",
             )
 
-        headers = {
-            "api-subscription-key": self.api_key,
-        }
-        files = {
-            "file": (filename, audio_bytes, "audio/wav"),
-        }
-        data = {
-            "model": self.stt_model,
-        }
-        if normalized_lang != "unknown":
-            data["language_code"] = normalized_lang
+        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
+            tmp.write(audio_bytes)
+            tmp_path = Path(tmp.name)
 
         try:
-            async with httpx.AsyncClient(timeout=30.0) as client:
-                resp = await client.post(
-                    f"{SARVAM_BASE_URL}/speech-to-text",
-                    headers=headers,
-                    files=files,
-                    data=data,
-                )
-                resp.raise_for_status()
-                result = resp.json()
-                detected_lang = result.get("language_code", normalized_lang)
-                transcript = result.get("transcript", "").strip()
-
-                # If language was auto-detected (unknown passed), request confirmation
-                needs_confirmation = False
-                confirm_prompt = None
-                if normalized_lang == "unknown" and detected_lang:
-                    needs_confirmation = True
-                    lang_name = LANG_DISPLAY_NAMES.get(detected_lang, detected_lang)
-                    confirm_prompt = f"We detected {lang_name}. Would you like to continue in this language?"
-
-                return SttResponse(
-                    transcript=transcript,
-                    language_code=detected_lang,
-                    is_fallback=False,
-                    needs_confirmation=needs_confirmation,
-                    detected_language=detected_lang,
-                    confirmation_prompt=confirm_prompt,
-                )
-        except Exception as e:
-            logger.warning("Sarvam STT failed: %s. Falling back to text.", e)
+            transcript = self.stt(path=tmp_path, lang=language_code)
+            return SttResponse(
+                transcript=transcript,
+                language_code=language_code,
+                is_fallback=False,
+            )
+        except SarvamUnavailable as err:
             return SttResponse(
                 transcript="",
-                language_code=normalized_lang if normalized_lang != "unknown" else "en-IN",
+                language_code=language_code,
                 is_fallback=True,
-                error=f"STT service error: {str(e)}",
+                error=str(err),
             )
+        finally:
+            try:
+                if tmp_path.exists():
+                    tmp_path.unlink()
+            except Exception:
+                pass
 
     async def text_to_speech(
         self,
         text: str,
-        target_language_code: str = "en-IN",
-        speaker: str = "meera",
+        target_language_code: str = "mr-IN",
+        speaker: Optional[str] = None,
     ) -> TtsResponse:
         """
-        Synthesizes text to speech using Sarvam TTS API with model 'bulbul:v3'.
-        1. Converts currency amounts to natural spoken words (e.g. ₹80,000 -> eighty thousand rupees).
-        2. Checks disk cache in backend/cache/ by hash(text+language+voice).
-        3. Calls Sarvam TTS if un-cached, then persists result.
+        Convenience wrapper that converts amounts to words and calls tts().
+        Returns TtsResponse with audio_base64 and cached path.
         """
         if not text:
-            return TtsResponse(audio_base64=None, is_fallback=True, error="Empty text input")
+            return TtsResponse(audio_base64=None, is_fallback=True, error="Empty text")
 
-        normalized_lang = self.normalize_language_code(target_language_code)
-        if normalized_lang == "unknown":
-            normalized_lang = "en-IN"
+        spk = speaker or self.speaker
+        spoken_text = convert_amounts_in_text(text, language_code=target_language_code)
+        cache_key = self.get_tts_cache_key(spoken_text, target_language_code, spk, self.tts_model)
+        json_cache = CACHE_DIR / f"{cache_key}.json"
 
-        # 1. Convert amounts to spoken words before TTS
-        spoken_text = convert_amounts_in_text(text, language_code=normalized_lang)
-
-        # 2. Check disk cache
-        cache_key = self._get_cache_key(spoken_text, normalized_lang, speaker, self.tts_model)
-        cache_file = CACHE_DIR / f"{cache_key}.json"
-
-        if cache_file.exists():
+        # Check JSON cache
+        if json_cache.exists():
             try:
-                cached_data = json.loads(cache_file.read_text(encoding="utf-8"))
+                data = json.loads(json_cache.read_text(encoding="utf-8"))
                 return TtsResponse(
-                    audio_base64=cached_data.get("audio_base64"),
-                    format=cached_data.get("format", "wav"),
-                    is_fallback=False,
+                    audio_base64=data.get("audio_base64"),
+                    file_path=data.get("file_path"),
+                    format="mp3",
+                    is_fallback=data.get("is_fallback", False),
                     cached=True,
                     spoken_text=spoken_text,
                 )
-            except Exception as read_err:
-                logger.warning("Failed to read TTS cache (%s); proceeding with API.", read_err)
+            except Exception:
+                pass
 
-        # 3. Call Sarvam API if configured
         if not self.is_configured:
-            logger.info("Sarvam API key not configured; generating mock audio cache for playback.")
             mock_audio = generate_mock_wav_base64()
             try:
-                cache_file.write_text(
+                json_cache.write_text(
                     json.dumps({
                         "audio_base64": mock_audio,
-                        "format": "wav",
+                        "file_path": None,
+                        "is_fallback": True,
                         "spoken_text": spoken_text,
-                        "language_code": normalized_lang,
-                        "speaker": speaker,
                     }),
                     encoding="utf-8",
                 )
             except Exception:
                 pass
-
             return TtsResponse(
                 audio_base64=mock_audio,
                 is_fallback=True,
                 cached=False,
                 spoken_text=spoken_text,
-                error="Sarvam API key not configured. Mock audio returned.",
             )
 
-        headers = {
-            "api-subscription-key": self.api_key,
-            "Content-Type": "application/json",
-        }
-        payload = {
-            "inputs": [spoken_text],
-            "target_language_code": normalized_lang,
-            "speaker": speaker,
-            "model": self.tts_model,
-        }
-
         try:
-            async with httpx.AsyncClient(timeout=30.0) as client:
-                resp = await client.post(
-                    f"{SARVAM_BASE_URL}/text-to-speech",
-                    headers=headers,
-                    json=payload,
-                )
-                resp.raise_for_status()
-                result = resp.json()
-                audios = result.get("audios", [])
-                audio_data = audios[0] if audios else None
-
-                # Persist to cache
-                if audio_data:
-                    try:
-                        cache_file.write_text(
-                            json.dumps({
-                                "audio_base64": audio_data,
-                                "format": "wav",
-                                "spoken_text": spoken_text,
-                                "language_code": normalized_lang,
-                                "speaker": speaker,
-                            }),
-                            encoding="utf-8",
-                        )
-                    except Exception as cache_err:
-                        logger.warning("Failed to save audio to cache: %s", cache_err)
-
-                return TtsResponse(
-                    audio_base64=audio_data,
-                    is_fallback=False,
-                    cached=False,
-                    spoken_text=spoken_text,
-                )
-        except Exception as e:
-            logger.warning("Sarvam TTS failed: %s. Using cached mock audio.", e)
-            mock_audio = generate_mock_wav_base64()
+            mp3_path = self.tts(text=spoken_text, lang=target_language_code)
+            audio_bytes = mp3_path.read_bytes()
+            b64_audio = base64.b64encode(audio_bytes).decode("ascii")
             try:
-                cache_file.write_text(
+                json_cache.write_text(
                     json.dumps({
-                        "audio_base64": mock_audio,
-                        "format": "wav",
+                        "audio_base64": b64_audio,
+                        "file_path": str(mp3_path),
+                        "is_fallback": False,
                         "spoken_text": spoken_text,
-                        "language_code": normalized_lang,
-                        "speaker": speaker,
                     }),
                     encoding="utf-8",
                 )
             except Exception:
                 pass
-
             return TtsResponse(
-                audio_base64=mock_audio,
+                audio_base64=b64_audio,
+                file_path=str(mp3_path),
+                format="mp3",
+                is_fallback=False,
+                cached=True,
+                spoken_text=spoken_text,
+            )
+        except SarvamUnavailable as err:
+            logger.warning("TTS unavailable: %s", err)
+            return TtsResponse(
+                audio_base64=None,
                 is_fallback=True,
-                error=f"TTS service error: {str(e)}",
+                error=str(err),
                 spoken_text=spoken_text,
             )
 
@@ -297,7 +423,7 @@ class SarvamService:
 sarvam_service = SarvamService()
 
 
-async def pregenerate_demo_audio() -> Dict[str, int]:
+async def pregenerate_demo_audio() -> Dict[str, Any]:
     """
     Pre-generates and caches TTS audio for all four seeded demo scenarios
     in English, Hindi, and Marathi to ensure instant voice playback in demo mode.
@@ -322,7 +448,6 @@ async def pregenerate_demo_audio() -> Dict[str, int]:
                 res = await sarvam_service.text_to_speech(
                     text=text,
                     target_language_code=lang,
-                    speaker="meera",
                 )
                 if res.audio_base64:
                     count += 1

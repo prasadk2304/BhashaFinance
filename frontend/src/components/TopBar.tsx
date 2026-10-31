@@ -13,6 +13,7 @@ interface TopBarProps {
   onLoadScenario: (scenarioId: string) => void;
   onViewTransactions?: () => void;
   onTalkToAgent?: () => void;
+  supportedLanguages?: Record<string, string>;
 }
 
 export const TopBar: React.FC<TopBarProps> = ({
@@ -23,9 +24,14 @@ export const TopBar: React.FC<TopBarProps> = ({
   onLoadScenario,
   onViewTransactions,
   onTalkToAgent,
+  supportedLanguages,
 }) => {
-  // Strict guard: only verified languages from SUPPORTED_LANGUAGES config are shown
-  const verifiedLanguages = getVerifiedLanguages();
+  // Use languages strictly returned from GET /api/languages
+  const languageEntries = Object.entries(
+    supportedLanguages && Object.keys(supportedLanguages).length > 0
+      ? supportedLanguages
+      : { "mr-IN": "मराठी", "hi-IN": "हिन्दी", "en-IN": "English" }
+  );
   return (
     <header className="bg-white border-b border-[#E1E8F0] px-4 sm:px-6 py-3 flex items-center justify-between sticky top-0 z-20">
       {/* Brand & Product Identity */}
@@ -78,7 +84,7 @@ export const TopBar: React.FC<TopBarProps> = ({
           </select>
         </div>
 
-        {/* Strict Guarded Language Selector (Shows ONLY languages in SUPPORTED_LANGUAGES) */}
+        {/* Language Selector (Reads GET /api/languages; Marathi default) */}
         <div className="flex items-center space-x-1.5 px-2.5 py-1.5 rounded border border-[#E1E8F0] bg-white text-xs text-[#1B2A41]">
           <Globe className="w-3.5 h-3.5 text-[#002E6E]" />
           <select
@@ -87,9 +93,9 @@ export const TopBar: React.FC<TopBarProps> = ({
             aria-label="Select Interface Language"
             className="bg-transparent text-xs font-semibold text-[#1B2A41] focus:outline-none cursor-pointer"
           >
-            {verifiedLanguages.map((lang) => (
-              <option key={lang.code} value={lang.code}>
-                {lang.nativeLabel} ({lang.label})
+            {languageEntries.map(([code, name]) => (
+              <option key={code} value={code}>
+                {name}
               </option>
             ))}
           </select>

@@ -66,6 +66,8 @@ export interface TurnResponse {
   calculation?: CalculationResult | null;
   citations: string[];
   audio_base64?: string | null;
+  reply_audio_url?: string | null;
+  transcript?: string | null;
 }
 
 export interface AgentHandoffResponse {

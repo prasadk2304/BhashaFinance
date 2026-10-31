@@ -181,13 +181,12 @@ class LLMService:
                     elif llm_num is not None:
                         # Number Mismatch detected: mark status="inferred" and ask for read-back
                         final_fields[field_name] = llm_num
-                        candidate_hint = regex_single_amount if regex_single_amount is not None else "different value"
                         field_meta[field_name] = ExtractionFieldResult(
                             value=llm_num,
                             status="inferred",
                             source=successful_source,
                             readback_required=True,
-                            readback_message=f"I noted ₹{llm_num:,.0f}, but detected {candidate_hint}. Could you please confirm the exact amount?",
+                            readback_message=f"₹{llm_num:,.0f}, correct? Please confirm.",
                         )
                     else:
                         final_fields[field_name] = None

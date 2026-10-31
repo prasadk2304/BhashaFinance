@@ -1,6 +1,32 @@
 import re
 from typing import Dict, List, Optional, Tuple
 
+# Mapping from Devanagari numerals (०-९) to ASCII digits (0-9)
+DEVANAGARI_DIGITS: Dict[str, str] = {
+    "०": "0",
+    "१": "1",
+    "२": "2",
+    "३": "3",
+    "४": "4",
+    "५": "5",
+    "६": "6",
+    "७": "7",
+    "८": "8",
+    "९": "9",
+}
+
+
+def normalize_devanagari_digits(text: str) -> str:
+    """
+    Normalizes Devanagari digits (०-९) to ASCII digits (0-9).
+    E.g.: '८०,००० रुपये' -> '80,000 रुपये'
+          '८० हजार' -> '80 हजार'
+    """
+    if not text:
+        return text
+    return "".join(DEVANAGARI_DIGITS.get(ch, ch) for ch in text)
+
+
 WORD_NUMBERS: Dict[str, int] = {
     "zero": 0,
     "one": 1,
@@ -73,6 +99,12 @@ MULTIPLIERS: Dict[str, float] = {
     "million": 1000000.0,
     "millions": 1000000.0,
     "billion": 1000000000.0,
+    "हजार": 1000.0,
+    "हज़ार": 1000.0,
+    "लाख": 100000.0,
+    "कोटी": 10000000.0,
+    "करोड़": 10000000.0,
+    "करोड": 10000000.0,
 }
 
 SPECIAL_COLLOQUIAL: Dict[str, float] = {
@@ -153,6 +185,7 @@ def parse_amount(text: str) -> Optional[float]:
     """
     Extracts and normalizes an amount from natural text.
     Handles:
+      - Devanagari digits: ८०,००० रुपये, ८० हजार
       - 80k, 80 K, 2.5k
       - 1.5 lakh, 1.5lakh, 2 lacs, 5 lakhs, 10 L
       - 2 crore, 1.5 cr
@@ -164,11 +197,12 @@ def parse_amount(text: str) -> Optional[float]:
     if not text:
         return None
 
-    cleaned = text.strip()
+    # 1. Normalize Devanagari numerals (०-९) to ASCII (0-9)
+    cleaned = normalize_devanagari_digits(text).strip()
 
     # Normalize currency prefixes
-    cleaned = re.sub(r"(?i)^(₹|rs\.?|inr)\s*", "", cleaned)
-    cleaned = re.sub(r"(?i)\s*(rupees|rs\.?|inr|per\s+month|p\.?m\.?|monthly)$", "", cleaned).strip()
+    cleaned = re.sub(r"(?i)^(₹|rs\.?|inr|रुपये|रु\.?)\s*", "", cleaned)
+    cleaned = re.sub(r"(?i)\s*(rupees|rs\.?|inr|रुपये|रु\.?|per\s+month|p\.?m\.?|monthly)$", "", cleaned).strip()
 
     # Check exact word match first if whole string is words
     word_val = words_to_number(cleaned)
@@ -176,13 +210,12 @@ def parse_amount(text: str) -> Optional[float]:
         return word_val
 
     # Regex pattern for shorthand like:
-    # 80k, 1.5 lakh, 1.5lakh, 2 crore, 28,000
-    # Also compound like '1 lakh 20 thousand' or '2.5 cr'
+    # 80k, 1.5 lakh, 1.5lakh, 2 crore, 28,000, 80 हजार
     pattern = re.compile(
         r"""
         (?P<num>\d+(?:,\d+)*(?:\.\d+)?)              # Number part, e.g. 80, 1.5, 28,000
         \s*
-        (?P<unit>k|thousand|thousands|hazaar|hazar|lakh|lakhs|lac|lacs|lk|crore|crores|cr|crs|hundred|sau)? # Optional unit
+        (?P<unit>k|thousand|thousands|hazaar|hazar|lakh|lakhs|lac|lacs|lk|crore|crores|cr|crs|hundred|sau|हजार|हज़ार|लाख|कोटी|करोड़|करोड)? # Optional unit
         """,
         re.IGNORECASE | re.VERBOSE,
     )
@@ -243,6 +276,7 @@ def extract_all_amounts(text: str) -> List[Tuple[str, float]]:
     if not text:
         return []
 
+    text = normalize_devanagari_digits(text)
     results = []
 
     # 1. Check for word-based expressions: "eighty thousand", "one lakh fifty thousand"
@@ -260,12 +294,12 @@ def extract_all_amounts(text: str) -> List[Tuple[str, float]]:
         if val is not None and val > 0:
             results.append((m_str, val))
 
-    # 2. Check for numeric and shorthand patterns: "80k", "1.5 lakh", "28,000", "₹50,000"
+    # 2. Check for numeric and shorthand patterns: "80k", "1.5 lakh", "28,000", "₹50,000", "80 हजार"
     num_pattern = re.compile(
-        r"(?:(?:₹|rs\.?|inr)\s*)?"
+        r"(?:(?:₹|rs\.?|inr|रुपये|रु\.?)\s*)?"
         r"(\d+(?:,\d+)*(?:\.\d+)?)"
         r"\s*"
-        r"(k|thousand|thousands|hazaar|hazar|lakh|lakhs|lac|lacs|lk|crore|crores|cr|crs|hundred|sau)?\b",
+        r"(k|thousand|thousands|hazaar|hazar|lakh|lakhs|lac|lacs|lk|crore|crores|cr|crs|hundred|sau|हजार|हज़ार|लाख|कोटी|करोड़|करोड)?\b",
         re.IGNORECASE,
     )
     for match in num_pattern.finditer(text):
@@ -293,7 +327,7 @@ def parse_tenure_months(text: str) -> Optional[int]:
     if not text:
         return None
 
-    cleaned = text.lower().strip()
+    cleaned = normalize_devanagari_digits(text).lower().strip()
 
     # Pattern for years
     m_year = re.search(r"(\d+(?:\.\d+)?)\s*(?:years?|yrs?|saal|baras)", cleaned)
@@ -326,7 +360,7 @@ def parse_percentage(text: str) -> Optional[float]:
     if not text:
         return None
 
-    cleaned = text.lower().strip()
+    cleaned = normalize_devanagari_digits(text).lower().strip()
     match = re.search(r"(\d+(?:\.\d+)?)\s*(?:%|percent|per\s*cent)?", cleaned)
     if match:
         try:

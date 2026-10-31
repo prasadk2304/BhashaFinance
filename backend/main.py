@@ -1,3 +1,8 @@
+import base64
+import logging
+import os
+from pathlib import Path
+import tempfile
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 import json
@@ -5,9 +10,13 @@ import uuid
 from typing import Any, Dict, List, Optional
 from fastapi import FastAPI, HTTPException, Request, UploadFile, File, Form, status
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, Field
 
-from backend.config import settings
+logger = logging.getLogger(__name__)
+
+from backend.audio import convert_to_16k_mono_wav, verify_ffmpeg_on_startup
+from backend.config import settings, SUPPORTED_LANGUAGES
 from backend.customers import get_mock_transactions, MOCK_CUSTOMERS
 from backend.database import (
     get_tickets_for_session,
@@ -30,22 +39,20 @@ from backend.rules.parser import parse_amount, extract_all_amounts
 from backend.rules.plain_definitions import add_inline_definitions
 from backend.rules.product_specs import PRODUCT_SPECS, get_product_spec
 from backend.rules.sip import calculate_sip, SipCalculationResult
-from backend.sarvam import sarvam_service, pregenerate_demo_audio, SttResponse, TtsResponse
+from backend.rules.spoken_numbers import convert_amounts_in_text
+from backend.sarvam import sarvam_service, SarvamUnavailable, CACHE_DIR
 from backend.state import JourneyState, JourneyStatus, MessageEntry
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Startup: Initialize SQLite, load RAG embeddings, and pregenerate demo audio
+    # Startup: Initialize SQLite, verify ffmpeg, and load RAG embeddings
     init_db()
+    verify_ffmpeg_on_startup()
     try:
         await rag_service.load_and_index()
     except Exception as e:
         print(f"Warning: RAG indexing encountered non-fatal error: {e}")
-    try:
-        await pregenerate_demo_audio()
-    except Exception as e:
-        print(f"Warning: Demo audio pregeneration encountered non-fatal error: {e}")
     yield
 
 
@@ -120,6 +127,8 @@ class TurnResponse(BaseModel):
     calculation: Optional[Dict[str, Any]] = None
     citations: List[str] = Field(default_factory=list)
     audio_base64: Optional[str] = None
+    reply_audio_url: Optional[str] = None
+    transcript: Optional[str] = None
 
 
 @app.post("/sessions", response_model=TurnResponse)
@@ -139,11 +148,20 @@ def create_session(req: CreateSessionRequest):
     step_result = plan_next_step(state=state, user_input=None, spec=spec)
     save_state(step_result.state)
 
+    reply = add_inline_definitions(step_result.prompt_message)
+    reply_audio_url = None
+    try:
+        spoken = convert_amounts_in_text(reply, language_code=settings.default_language)
+        mp3 = sarvam_service.tts(text=spoken, lang=settings.default_language)
+        reply_audio_url = f"/api/voice/audio/{mp3.name}"
+    except Exception:
+        reply_audio_url = None
+
     calc_dump = step_result.calculation.model_dump() if step_result.calculation else None
     return TurnResponse(
         session_id=session_id,
         journey_id=req.journey_id,
-        reply_text=add_inline_definitions(step_result.prompt_message),
+        reply_text=reply,
         state=step_result.state.model_dump(),
         next_action=step_result.next_action,
         target_field=step_result.target_field,
@@ -151,6 +169,7 @@ def create_session(req: CreateSessionRequest):
         results=calc_dump,
         calculation=calc_dump,
         citations=[],
+        reply_audio_url=reply_audio_url,
     )
 
 
@@ -167,45 +186,186 @@ def get_session(session_id: str):
     }
 
 
+def validate_language_code(code: Optional[str]) -> str:
+    """
+    Validates that language code is supported.
+    Accepts BCP-47 codes (mr-IN, hi-IN, en-IN) or short codes (mr, hi, en).
+    Rejects other codes with 400.
+    """
+    if not code or code in ("unknown", ""):
+        return settings.default_language
+    code = code.strip()
+    if code in SUPPORTED_LANGUAGES:
+        return code
+    # Allow short codes (mr -> mr-IN)
+    for bcp in SUPPORTED_LANGUAGES:
+        if bcp.lower().startswith(f"{code.lower()}-") or bcp.lower() == code.lower():
+            return bcp
+    raise HTTPException(
+        status_code=400,
+        detail=f"Unsupported language code '{code}'. Supported: {list(SUPPORTED_LANGUAGES.keys())}",
+    )
+
+
+# ==============================================================================
+# Voice & Language Endpoints (Sarvam SDK Integration)
+# ==============================================================================
+
+@app.get("/api/languages")
+def get_supported_languages():
+    """Returns supported languages configuration map."""
+    return SUPPORTED_LANGUAGES
+
+
+@app.post("/api/voice/stt")
+async def voice_stt(
+    audio: UploadFile = File(...),
+    language_code: Optional[str] = Form(None),
+):
+    """
+    Transcribes uploaded audio (webm/ogg/mp4/wav) using Sarvam STT.
+    Converts to 16 kHz mono WAV, checks 10 MB limit and 30s max duration.
+    On failure, returns 503 with {fallback: "text"}.
+    """
+    target_lang = validate_language_code(language_code)
+
+    content = await audio.read()
+    if len(content) > 10 * 1024 * 1024:
+        raise HTTPException(status_code=400, detail="Audio file exceeds 10 MB limit.")
+
+    suffix = Path(audio.filename or "upload.wav").suffix or ".wav"
+    with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp_in:
+        tmp_in.write(content)
+        tmp_in_path = Path(tmp_in.name)
+
+    converted_wav = None
+    try:
+        converted_wav = convert_to_16k_mono_wav(tmp_in_path)
+        transcript = sarvam_service.stt(path=converted_wav, lang=target_lang)
+        return {"transcript": transcript, "language_code": target_lang}
+    except (SarvamUnavailable, Exception) as err:
+        logger.warning("Voice STT endpoint failed: %s", type(err).__name__)
+        return JSONResponse(
+            status_code=503,
+            content={"fallback": "text", "detail": f"STT failed: {str(err)}"},
+        )
+    finally:
+        try:
+            if tmp_in_path.exists():
+                tmp_in_path.unlink()
+            if converted_wav and converted_wav.exists() and converted_wav != tmp_in_path:
+                converted_wav.unlink()
+        except Exception:
+            pass
+
+
+class TtsRequest(BaseModel):
+    text: str
+    language_code: Optional[str] = None
+
+
+@app.post("/api/voice/tts")
+def voice_tts(req: TtsRequest):
+    """
+    Synthesizes speech using Sarvam TTS.
+    Converts numeric amounts to spoken words before synthesis.
+    Returns audio/mpeg FileResponse.
+    """
+    target_lang = validate_language_code(req.language_code)
+
+    if not req.text.strip():
+        raise HTTPException(status_code=400, detail="Text cannot be empty.")
+
+    spoken_text = convert_amounts_in_text(req.text, language_code=target_lang)
+    try:
+        mp3_path = sarvam_service.tts(text=spoken_text, lang=target_lang)
+        return FileResponse(
+            path=str(mp3_path),
+            media_type="audio/mpeg",
+            filename=mp3_path.name,
+        )
+    except (SarvamUnavailable, Exception) as err:
+        logger.warning("Voice TTS endpoint failed: %s", type(err).__name__)
+        raise HTTPException(status_code=503, detail=f"TTS service unavailable: {str(err)}")
+
+
+@app.get("/api/voice/audio/{filename}")
+def get_cached_audio_file(filename: str):
+    """Serves cached MP3 audio file."""
+    safe_name = Path(filename).name
+    file_path = CACHE_DIR / safe_name
+    if not file_path.exists() or not file_path.is_file():
+        raise HTTPException(status_code=404, detail="Audio file not found.")
+    return FileResponse(path=str(file_path), media_type="audio/mpeg")
+
+
 @app.post("/sessions/{session_id}/turns", response_model=TurnResponse)
 async def handle_session_turn(
     session_id: str,
     request: Request,
     text: Optional[str] = Form(None),
     audio: Optional[UploadFile] = File(None),
-    language_code: Optional[str] = Form("unknown"),
+    language_code: Optional[str] = Form(None),
     synthesize_speech: bool = Form(False),
 ):
     """
     Accepts text or audio (voice). Persists state after every turn.
-    Returns: reply_text, state, next_action, results, citations[].
+    Returns: reply_text, state, next_action, results, citations[], reply_audio_url, transcript.
     Grounds payment_help and loan_rejection in retrieved chunks + mock data.
+    Graceful degradation:
+      - If Sarvam STT fails, return 503 with {fallback: "text"}.
+      - If TTS fails, return reply_text without audio.
+      - No exception may crash a turn.
     """
     state = load_state(session_id)
     if not state:
         raise HTTPException(status_code=404, detail="Session not found.")
 
-    # Check if request was sent as JSON
-    content_type = request.headers.get("content-type", "")
+    target_lang = settings.default_language
     user_utterance = ""
+    content_type = request.headers.get("content-type", "")
 
     if "application/json" in content_type:
         body = await request.json()
-        user_utterance = body.get("text", "").strip()
+        user_utterance = (body.get("text") or "").strip()
         synthesize_speech = body.get("synthesize_speech", False)
+        req_lang = body.get("language_code")
+        if req_lang:
+            target_lang = validate_language_code(req_lang)
     else:
         # Multipart form data
+        if language_code:
+            target_lang = validate_language_code(language_code)
+
         if audio is not None:
             audio_bytes = await audio.read()
-            stt_res = await sarvam_service.speech_to_text(
-                audio_bytes=audio_bytes,
-                filename=audio.filename or "audio.wav",
-                language_code=language_code or "unknown",
-            )
-            user_utterance = stt_res.transcript.strip()
-            if not user_utterance and stt_res.error:
-                # If STT failed or wasn't configured, fall back to text if provided
-                user_utterance = (text or "").strip()
+            if len(audio_bytes) > 10 * 1024 * 1024:
+                raise HTTPException(status_code=400, detail="Audio file exceeds 10 MB limit.")
+
+            suffix = Path(audio.filename or "upload.wav").suffix or ".wav"
+            with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp_in:
+                tmp_in.write(audio_bytes)
+                tmp_in_path = Path(tmp_in.name)
+
+            converted_wav = None
+            try:
+                converted_wav = convert_to_16k_mono_wav(tmp_in_path)
+                user_utterance = sarvam_service.stt(path=converted_wav, lang=target_lang).strip()
+            except (SarvamUnavailable, Exception) as err:
+                logger.warning("Sarvam STT failed during turn: %s", type(err).__name__)
+                # Graceful degradation: return 503 with {fallback: "text"}
+                return JSONResponse(
+                    status_code=503,
+                    content={"fallback": "text", "detail": f"STT failed: {str(err)}"},
+                )
+            finally:
+                try:
+                    if tmp_in_path.exists():
+                        tmp_in_path.unlink()
+                    if converted_wav and converted_wav.exists() and converted_wav != tmp_in_path:
+                        converted_wav.unlink()
+                except Exception:
+                    pass
         elif text:
             user_utterance = text.strip()
 
@@ -226,7 +386,7 @@ async def handle_session_turn(
             for r in rag_results:
                 rag_context_text += f"- [{r.chunk.id}] {r.chunk.heading}: {r.chunk.content[:160]}...\n"
 
-    # Field extraction with LLM Service (Sarvam -> Ollama -> Regex fallback)
+    # Field extraction: run existing regex parser first -> then LLM extractor -> planner
     extracted_fields_meta = None
     missing_fields = state.get_missing_required_fields(spec.required_fields)
     if user_utterance and missing_fields and state.status == JourneyStatus.COLLECTING:
@@ -237,10 +397,11 @@ async def handle_session_turn(
             ext_res = await llm_service.extract_with_fallback(
                 transcript=user_utterance,
                 schema=schema,
-                language=language_code or "en",
+                language=target_lang,
             )
             extracted_fields_meta = ext_res.field_metadata
-        except Exception:
+        except Exception as e:
+            logger.warning("Extraction encountered non-fatal error: %s", type(e).__name__)
             extracted_fields_meta = None
 
     # Step the deterministic planner
@@ -261,11 +422,19 @@ async def handle_session_turn(
     # Persist state after EVERY turn!
     save_state(step_result.state)
 
-    # Optional TTS synthesis
+    # TTS synthesis with graceful degradation (never crash a turn)
+    reply_audio_url = None
     audio_base64 = None
-    if synthesize_speech and reply:
-        tts_res = await sarvam_service.text_to_speech(text=reply)
-        audio_base64 = tts_res.audio_base64
+
+    try:
+        spoken_reply = convert_amounts_in_text(reply, language_code=target_lang)
+        mp3_path = sarvam_service.tts(text=spoken_reply, lang=target_lang)
+        reply_audio_url = f"/api/voice/audio/{mp3_path.name}"
+        if synthesize_speech and mp3_path.exists():
+            audio_base64 = base64.b64encode(mp3_path.read_bytes()).decode("ascii")
+    except Exception as e:
+        logger.warning("Turn TTS synthesis degraded gracefully: %s", type(e).__name__)
+        reply_audio_url = None
 
     calc_dump = step_result.calculation.model_dump() if step_result.calculation else None
     return TurnResponse(
@@ -280,6 +449,8 @@ async def handle_session_turn(
         calculation=calc_dump,
         citations=citations,
         audio_base64=audio_base64,
+        reply_audio_url=reply_audio_url,
+        transcript=user_utterance if user_utterance else None,
     )
 
 
