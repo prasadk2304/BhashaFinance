@@ -13,6 +13,7 @@ import {
   Percent,
   Calendar,
   Layers,
+  AlertTriangle,
 } from "lucide-react";
 
 interface LoanOfferComparisonProps {
@@ -289,46 +290,94 @@ export const LoanOfferComparison: React.FC<LoanOfferComparisonProps> = ({
         </div>
 
         <div className="overflow-x-auto">
-          <table className="w-full text-left text-xs border-collapse">
-            <thead>
-              <tr className="bg-[#F5F7FA] border-b border-[#E1E8F0] text-[11px] text-[#6B7C93] uppercase font-semibold">
-                <th className="py-2.5 px-4">Plan Name</th>
-                <th className="py-2.5 px-3">Tenure</th>
-                <th className="py-2.5 px-3">Rate</th>
-                <th className="py-2.5 px-3">Monthly EMI</th>
-                <th className="py-2.5 px-3">Fee (2%+GST)</th>
-                <th className="py-2.5 px-4">Total Repayment</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-[#E1E8F0]">
-              {offers.map((off) => (
-                <tr
-                  key={off.id}
-                  className={`hover:bg-[#F5F7FA] transition-colors ${
-                    off.highlight ? "bg-blue-50/50 font-medium" : ""
-                  }`}
-                >
-                  <td className="py-3 px-4 flex items-center space-x-2">
-                    <span className="text-[#1B2A41]">{off.name}</span>
-                    <span className="text-[9px] font-bold px-1.5 py-0.2 rounded bg-white border border-[#E1E8F0] text-[#002E6E]">
-                      {off.tag}
+          {/* Find minimum total repayment baseline to identify hidden costs */}
+          {(() => {
+            const minRepaymentOffer = offers.reduce(
+              (min, o) => (o.totalRepayment < min.totalRepayment ? o : min),
+              offers[0]
+            );
+
+            return (
+              <>
+                <table className="w-full text-left text-xs border-collapse">
+                  <thead>
+                    <tr className="bg-[#F5F7FA] border-b border-[#E1E8F0] text-[11px] text-[#6B7C93] uppercase font-semibold">
+                      <th className="py-2.5 px-4">Plan Name</th>
+                      <th className="py-2.5 px-3">Tenure</th>
+                      <th className="py-2.5 px-3">Rate</th>
+                      <th className="py-2.5 px-3">Monthly EMI</th>
+                      <th className="py-2.5 px-3">Fee (2%+GST)</th>
+                      <th className="py-2.5 px-4">Total Repayment</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-[#E1E8F0]">
+                    {offers.map((off) => {
+                      const hasHiddenCost =
+                        off.emi < minRepaymentOffer.emi &&
+                        off.totalRepayment > minRepaymentOffer.totalRepayment;
+                      const hiddenCostDiff = off.totalRepayment - minRepaymentOffer.totalRepayment;
+
+                      return (
+                        <tr
+                          key={off.id}
+                          className={`hover:bg-[#F5F7FA] transition-colors ${
+                            off.highlight ? "bg-blue-50/50 font-medium" : ""
+                          }`}
+                        >
+                          <td className="py-3 px-4">
+                            <div className="flex flex-wrap items-center gap-1.5">
+                              <span className="text-[#1B2A41] font-semibold">{off.name}</span>
+                              <span className="text-[9px] font-bold px-1.5 py-0.2 rounded bg-white border border-[#E1E8F0] text-[#002E6E]">
+                                {off.tag}
+                              </span>
+                              {hasHiddenCost && (
+                                <span
+                                  className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-amber-50 border border-amber-300 text-amber-900 inline-flex items-center space-x-1"
+                                  title={`Hidden-cost flag: Lower monthly EMI, but ₹${hiddenCostDiff.toLocaleString('en-IN')} higher total repayment due to longer tenure`}
+                                >
+                                  <AlertTriangle className="w-3 h-3 text-amber-600" />
+                                  <span>Hidden Cost</span>
+                                </span>
+                              )}
+                            </div>
+                          </td>
+                          <td className="py-3 px-3 tabular-nums font-mono">{off.tenure}M</td>
+                          <td className="py-3 px-3 tabular-nums font-mono">{off.rate.toFixed(1)}%</td>
+                          <td className="py-3 px-3 tabular-nums font-mono font-bold text-[#002E6E]">
+                            ₹ {off.emi.toLocaleString("en-IN")}
+                          </td>
+                          <td className="py-3 px-3 tabular-nums font-mono">
+                            ₹ {off.fee.toLocaleString("en-IN")}
+                          </td>
+                          <td className="py-3 px-4 tabular-nums font-mono">
+                            <span className="font-semibold text-[#1B2A41]">
+                              ₹ {off.totalRepayment.toLocaleString("en-IN")}
+                            </span>
+                            {hasHiddenCost && (
+                              <span className="text-[10px] block text-amber-900 font-bold mt-0.5">
+                                +₹{hiddenCostDiff.toLocaleString("en-IN")} vs {minRepaymentOffer.tenure}M
+                              </span>
+                            )}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+
+                {/* Hidden Cost Transparency Notice */}
+                <div className="p-3 bg-amber-50/70 border-t border-amber-200 text-amber-900 text-xs flex items-start space-x-2">
+                  <AlertTriangle className="w-4 h-4 text-amber-700 flex-shrink-0 mt-0.5" />
+                  <div>
+                    <span className="font-bold">Hidden-Cost Transparency Notice: </span>
+                    <span className="text-amber-950">
+                      Plans with longer tenures provide lower monthly installments, but accrue significantly more total interest over time. Always inspect the Total Repayment figure before finalizing your choice.
                     </span>
-                  </td>
-                  <td className="py-3 px-3 tabular-nums font-mono">{off.tenure}M</td>
-                  <td className="py-3 px-3 tabular-nums font-mono">{off.rate.toFixed(1)}%</td>
-                  <td className="py-3 px-3 tabular-nums font-mono font-bold text-[#002E6E]">
-                    ₹ {off.emi.toLocaleString("en-IN")}
-                  </td>
-                  <td className="py-3 px-3 tabular-nums font-mono">
-                    ₹ {off.fee.toLocaleString("en-IN")}
-                  </td>
-                  <td className="py-3 px-4 tabular-nums font-mono font-semibold">
-                    ₹ {off.totalRepayment.toLocaleString("en-IN")}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+                  </div>
+                </div>
+              </>
+            );
+          })()}
         </div>
       </div>
 

@@ -16,19 +16,21 @@ import { StartScreen } from "@/components/StartScreen";
 import { ConversationPanel } from "@/components/ConversationPanel";
 import { JourneyStatePanel } from "@/components/JourneyStatePanel";
 import { CustomerTransactionsModal } from "@/components/CustomerTransactionsModal";
+import { AgentHandoffModal } from "@/components/AgentHandoffModal";
 import { Loader2, AlertCircle } from "lucide-react";
 
 export default function Home() {
   const [products, setProducts] = useState<Product[]>([]);
   const [loadingProducts, setLoadingProducts] = useState(true);
   const [activeSession, setActiveSession] = useState<TurnResponse | null>(null);
-  const [selectedLanguage, setSelectedLanguage] = useState("en-IN");
+  const [selectedLanguage, setSelectedLanguage] = useState("mr");
   const [customerId, setCustomerId] = useState("CUST-1001");
   const [customerTransactions, setCustomerTransactions] = useState<Transaction[]>([]);
   const [isThinking, setIsThinking] = useState(false);
   const [isConfirming, setIsConfirming] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [showTransactionsModal, setShowTransactionsModal] = useState(false);
+  const [showAgentModal, setShowAgentModal] = useState(false);
   const [createdTicketId, setCreatedTicketId] = useState<string | null>(null);
   const [confirmedReferenceId, setConfirmedReferenceId] = useState<string | undefined>(undefined);
 
@@ -170,7 +172,7 @@ export default function Home() {
   };
 
   const handleAgentHandoff = () => {
-    alert("Live Support Handoff: Connecting to Paytm Lending Support Queue (Sample Queue Pos #1)... An advisor will assist shortly.");
+    setShowAgentModal(true);
   };
 
   const handleReset = () => {
@@ -182,7 +184,7 @@ export default function Home() {
 
   return (
     <div className="min-h-screen flex flex-col bg-[#F5F7FA] text-[#1B2A41]">
-      {/* Top Bar */}
+      {/* Top Bar with Guarded Language Selector and Agent Handoff */}
       <TopBar
         selectedLanguage={selectedLanguage}
         onLanguageChange={setSelectedLanguage}
@@ -190,6 +192,7 @@ export default function Home() {
         onReset={handleReset}
         onLoadScenario={handleLoadScenario}
         onViewTransactions={() => setShowTransactionsModal(true)}
+        onTalkToAgent={handleAgentHandoff}
       />
 
       {/* Global Error Notice */}
@@ -230,6 +233,9 @@ export default function Home() {
                 onSendMessage={handleSendMessage}
                 onSendAudio={handleSendAudio}
                 audioBase64={activeSession.audio_base64}
+                targetFieldWhy={activeSession.target_field_why}
+                targetFieldName={activeSession.target_field}
+                onTalkToAgent={handleAgentHandoff}
               />
             </div>
 
@@ -260,6 +266,13 @@ export default function Home() {
           onClose={() => setShowTransactionsModal(false)}
         />
       )}
+
+      {/* Talk to an Agent Zero-Repetition Modal */}
+      <AgentHandoffModal
+        sessionId={activeSession?.session_id || "demo_sess_1001"}
+        isOpen={showAgentModal}
+        onClose={() => setShowAgentModal(false)}
+      />
     </div>
   );
 }

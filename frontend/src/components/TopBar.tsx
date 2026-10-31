@@ -1,8 +1,9 @@
 "use client";
 
 import React from "react";
-import { Globe, User, RefreshCw, PlayCircle } from "lucide-react";
+import { Globe, User, RefreshCw, PlayCircle, Headphones } from "lucide-react";
 import { DEMO_SCENARIOS } from "@/lib/demoScenarios";
+import { getVerifiedLanguages } from "@/config/languages";
 
 interface TopBarProps {
   selectedLanguage: string;
@@ -11,15 +12,8 @@ interface TopBarProps {
   onReset: () => void;
   onLoadScenario: (scenarioId: string) => void;
   onViewTransactions?: () => void;
+  onTalkToAgent?: () => void;
 }
-
-export const LANGUAGES = [
-  { code: "en-IN", label: "English" },
-  { code: "hi-IN", label: "हिन्दी (Hindi)" },
-  { code: "hinglish", label: "Hinglish" },
-  { code: "kn-IN", label: "ಕನ್ನಡ (Kannada)" },
-  { code: "ta-IN", label: "தமிழ் (Tamil)" },
-];
 
 export const TopBar: React.FC<TopBarProps> = ({
   selectedLanguage,
@@ -28,7 +22,10 @@ export const TopBar: React.FC<TopBarProps> = ({
   onReset,
   onLoadScenario,
   onViewTransactions,
+  onTalkToAgent,
 }) => {
+  // Strict guard: only verified languages from SUPPORTED_LANGUAGES config are shown
+  const verifiedLanguages = getVerifiedLanguages();
   return (
     <header className="bg-white border-b border-[#E1E8F0] px-4 sm:px-6 py-3 flex items-center justify-between sticky top-0 z-20">
       {/* Brand & Product Identity */}
@@ -81,7 +78,7 @@ export const TopBar: React.FC<TopBarProps> = ({
           </select>
         </div>
 
-        {/* Language selector */}
+        {/* Strict Guarded Language Selector (Shows ONLY languages in SUPPORTED_LANGUAGES) */}
         <div className="flex items-center space-x-1.5 px-2.5 py-1.5 rounded border border-[#E1E8F0] bg-white text-xs text-[#1B2A41]">
           <Globe className="w-3.5 h-3.5 text-[#002E6E]" />
           <select
@@ -90,13 +87,26 @@ export const TopBar: React.FC<TopBarProps> = ({
             aria-label="Select Interface Language"
             className="bg-transparent text-xs font-semibold text-[#1B2A41] focus:outline-none cursor-pointer"
           >
-            {LANGUAGES.map((lang) => (
+            {verifiedLanguages.map((lang) => (
               <option key={lang.code} value={lang.code}>
-                {lang.label}
+                {lang.nativeLabel} ({lang.label})
               </option>
             ))}
           </select>
         </div>
+
+        {/* Talk to an Agent Handoff Button */}
+        {onTalkToAgent && (
+          <button
+            onClick={onTalkToAgent}
+            aria-label="Transfer to human agent with zero repetition"
+            className="flex items-center space-x-1.5 px-3 py-1.5 rounded bg-[#002E6E] text-white hover:bg-[#002252] text-xs font-semibold transition-colors shadow-sm"
+            title="Connect with Priority Support Agent"
+          >
+            <Headphones className="w-3.5 h-3.5 text-[#00BAF2]" />
+            <span className="hidden sm:inline">Talk to Agent</span>
+          </button>
+        )}
 
         {/* Customer Ledger Button */}
         {onViewTransactions && (

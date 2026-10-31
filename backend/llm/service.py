@@ -15,6 +15,29 @@ from backend.rules.parser import (
 logger = logging.getLogger(__name__)
 
 
+from backend.rules.plain_definitions import add_inline_definitions
+
+DISTRESS_KEYWORDS = {
+    "emergency", "hospital", "medical", "urgent", "urgently",
+    "stuck", "rejected", "declined", "crisis", "penalty", "distress"
+}
+
+
+def detect_urgency_tone(facts: Dict[str, Any], current_tone: str = "professional") -> str:
+    """
+    Detects urgency or distress keywords across fact keys and string values.
+    Switches to 'calm' tone when distress is detected.
+    """
+    serialized = " ".join(
+        f"{k} {v}" for k, v in facts.items()
+        if isinstance(v, (str, int, float, list, dict))
+    ).lower()
+
+    if any(kw in serialized for kw in DISTRESS_KEYWORDS):
+        return "calm"
+    return current_tone
+
+
 class LLMService:
     def __init__(
         self,
@@ -271,28 +294,45 @@ class LLMService:
         """
         Explains backend-computed facts using active provider with fallback to Ollama,
         then fallback to deterministic template.
+        Urgency/Distress: Automatically switches to calm style (acknowledges in 1 sentence,
+        gives next step first, strictly under 40 words).
         Rule: Prompt receives ONLY backend-computed facts and must not add numbers, approval claims or advice.
         """
+        # Tone layer: detect urgency/distress keywords and switch to calm tone
+        effective_tone = detect_urgency_tone(facts, current_tone=tone)
+
+        explanation = ""
         # 1. Try active provider
         provider = self._get_active_provider()
         try:
-            return await provider.explain(facts, language, tone)
+            explanation = await provider.explain(facts, language, effective_tone)
         except Exception as e:
             logger.warning("Primary provider explain failed (%s), attempting Ollama fallback.", type(e).__name__)
 
         # 2. Try Ollama fallback if primary wasn't Ollama
-        if provider != self.ollama:
+        if not explanation and provider != self.ollama:
             try:
-                return await self.ollama.explain(facts, language, tone)
+                explanation = await self.ollama.explain(facts, language, effective_tone)
             except Exception as o_err:
                 logger.warning("Ollama fallback explain failed (%s).", type(o_err).__name__)
 
         # 3. Deterministic template fallback
-        journey = facts.get("journey_id", "financial")
-        return (
-            f"Here is your {journey.replace('_', ' ')} summary based on verified inputs. "
-            "All figures are Sample non-binding calculations for demonstration purposes only."
-        )
+        if not explanation:
+            journey = facts.get("journey_id", "financial")
+            if effective_tone == "calm":
+                explanation = (
+                    "We understand this is urgent and are here to help. "
+                    "Your next step is to review the sample terms below. "
+                    "All figures are Sample non-binding estimates."
+                )
+            else:
+                explanation = (
+                    f"Here is your {journey.replace('_', ' ')} summary based on verified inputs. "
+                    "All figures are Sample non-binding calculations for demonstration purposes only."
+                )
+
+        # 4. Inject plain-language inline definitions on first mention
+        return add_inline_definitions(explanation)
 
 
 llm_service = LLMService()

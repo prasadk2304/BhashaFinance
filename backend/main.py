@@ -27,20 +27,25 @@ from backend.rag import rag_service
 from backend.rules.emi import calculate_emi, EmiCalculationResult
 from backend.rules.foir import calculate_foir, FoirCalculationResult
 from backend.rules.parser import parse_amount, extract_all_amounts
+from backend.rules.plain_definitions import add_inline_definitions
 from backend.rules.product_specs import PRODUCT_SPECS, get_product_spec
 from backend.rules.sip import calculate_sip, SipCalculationResult
-from backend.sarvam import sarvam_service, SttResponse, TtsResponse
+from backend.sarvam import sarvam_service, pregenerate_demo_audio, SttResponse, TtsResponse
 from backend.state import JourneyState, JourneyStatus, MessageEntry
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Startup: Initialize SQLite and load RAG embeddings
+    # Startup: Initialize SQLite, load RAG embeddings, and pregenerate demo audio
     init_db()
     try:
         await rag_service.load_and_index()
     except Exception as e:
         print(f"Warning: RAG indexing encountered non-fatal error: {e}")
+    try:
+        await pregenerate_demo_audio()
+    except Exception as e:
+        print(f"Warning: Demo audio pregeneration encountered non-fatal error: {e}")
     yield
 
 
@@ -110,6 +115,7 @@ class TurnResponse(BaseModel):
     state: Dict[str, Any]
     next_action: str
     target_field: Optional[str] = None
+    target_field_why: Optional[str] = None
     results: Optional[Dict[str, Any]] = None
     calculation: Optional[Dict[str, Any]] = None
     citations: List[str] = Field(default_factory=list)
@@ -137,10 +143,11 @@ def create_session(req: CreateSessionRequest):
     return TurnResponse(
         session_id=session_id,
         journey_id=req.journey_id,
-        reply_text=step_result.prompt_message,
+        reply_text=add_inline_definitions(step_result.prompt_message),
         state=step_result.state.model_dump(),
         next_action=step_result.next_action,
         target_field=step_result.target_field,
+        target_field_why=step_result.target_field_why,
         results=calc_dump,
         calculation=calc_dump,
         citations=[],
@@ -248,6 +255,9 @@ async def handle_session_turn(
     if rag_context_text and step_result.next_action in ("request_consent", "submitted"):
         reply += f"\n{rag_context_text}"
 
+    # Plain-language inline definitions on first mention
+    reply = add_inline_definitions(reply)
+
     # Persist state after EVERY turn!
     save_state(step_result.state)
 
@@ -265,6 +275,7 @@ async def handle_session_turn(
         state=step_result.state.model_dump(),
         next_action=step_result.next_action,
         target_field=step_result.target_field,
+        target_field_why=step_result.target_field_why,
         results=calc_dump,
         calculation=calc_dump,
         citations=citations,
@@ -333,6 +344,70 @@ def create_ticket(session_id: str, req: CreateTicketRequest):
     }
     save_ticket(ticket)
     return ticket
+
+
+class AgentHandoffResponse(BaseModel):
+    handoff_id: str
+    session_id: str
+    journey_id: str
+    journey_title: str
+    summary_paragraph: str
+    journey_state: Dict[str, Any]
+    status: str = "connected"
+    estimated_wait_seconds: int = 30
+
+
+@app.post("/sessions/{session_id}/agent_handoff", response_model=AgentHandoffResponse)
+def handoff_to_agent(session_id: str):
+    """
+    Hands off the customer session to a live human agent.
+    Provides full journey state and a 1-paragraph summary so the customer NEVER repeats themselves.
+    """
+    state = load_state(session_id)
+    if not state:
+        raise HTTPException(status_code=404, detail="Session not found.")
+
+    spec = get_product_spec(state.journey_id)
+    title = spec.title if spec else state.journey_id.replace("_", " ").title()
+
+    field_summaries = []
+    for fname, f in state.fields.items():
+        if f.value is not None:
+            unit = f.unit or ""
+            field_summaries.append(f"{f.label or fname}: {f.value}{unit} [{f.status.value}]")
+
+    fields_text = ", ".join(field_summaries) if field_summaries else "No inputs gathered yet"
+
+    all_user_msgs = " ".join([m.text for m in state.messages if m.sender == "user"]).lower()
+    is_urgent = any(kw in all_user_msgs for kw in ["emergency", "hospital", "medical", "urgent", "stuck", "rejected", "declined"])
+    urgency_tag = "Urgent" if is_urgent else "Standard"
+
+    calc_str = ""
+    if state.calculation and state.calculation.metrics:
+        m = state.calculation.metrics
+        if "monthly_emi" in m:
+            calc_str = f" Computed Sample EMI is ₹{m.get('monthly_emi_rounded', m.get('monthly_emi', 0)):,}."
+        elif "late_fee_waiver" in m:
+            calc_str = f" Late fee waiver of ₹{m.get('late_fee_waiver', 0):.0f} was applied."
+
+    summary = (
+        f"Customer session {session_id} on {title} [{urgency_tag} priority]. "
+        f"Current status is '{state.status.value}'. Captured fields: {fields_text}.{calc_str} "
+        f"Pending action: '{state.status.value}'. "
+        "All verified information is transferred; specialist can assist immediately without requesting re-explanation."
+    )
+
+    handoff_id = f"AGT-{abs(hash(session_id)) % 1000000:06d}"
+    return AgentHandoffResponse(
+        handoff_id=handoff_id,
+        session_id=session_id,
+        journey_id=state.journey_id,
+        journey_title=title,
+        summary_paragraph=summary,
+        journey_state=state.model_dump(),
+        status="connected",
+        estimated_wait_seconds=30,
+    )
 
 
 @app.get("/customers/{customer_id}/transactions")

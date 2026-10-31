@@ -61,10 +61,22 @@ export interface TurnResponse {
   state: JourneyState;
   next_action: string;
   target_field?: string;
+  target_field_why?: string;
   results?: CalculationResult | null;
   calculation?: CalculationResult | null;
   citations: string[];
   audio_base64?: string | null;
+}
+
+export interface AgentHandoffResponse {
+  handoff_id: string;
+  session_id: string;
+  journey_id: string;
+  journey_title: string;
+  summary_paragraph: string;
+  journey_state: JourneyState;
+  status: string;
+  estimated_wait_seconds: number;
 }
 
 export interface Product {

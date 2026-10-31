@@ -2,7 +2,19 @@
 
 import React, { useState, useRef, useEffect } from "react";
 import { MessageEntry } from "@/types";
-import { Mic, MicOff, Send, Loader2, Volume2, ShieldCheck, User, MessageSquare } from "lucide-react";
+import {
+  Mic,
+  MicOff,
+  Send,
+  Loader2,
+  Volume2,
+  ShieldCheck,
+  User,
+  MessageSquare,
+  HelpCircle,
+  Headphones,
+  CheckCircle2,
+} from "lucide-react";
 
 interface ConversationPanelProps {
   messages: MessageEntry[];
@@ -11,6 +23,9 @@ interface ConversationPanelProps {
   onSendMessage: (text: string) => void;
   onSendAudio: (audioBlob: Blob) => void;
   audioBase64?: string | null;
+  targetFieldWhy?: string;
+  targetFieldName?: string;
+  onTalkToAgent?: () => void;
 }
 
 export type VoiceState = "idle" | "listening" | "thinking" | "speaking";
@@ -22,10 +37,14 @@ export const ConversationPanel: React.FC<ConversationPanelProps> = ({
   onSendMessage,
   onSendAudio,
   audioBase64,
+  targetFieldWhy,
+  targetFieldName,
+  onTalkToAgent,
 }) => {
   const [inputText, setInputText] = useState("");
   const [voiceState, setVoiceState] = useState<VoiceState>("idle");
   const [voiceError, setVoiceError] = useState<string | null>(null);
+  const [showWhyTooltip, setShowWhyTooltip] = useState<boolean>(true);
 
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const audioChunksRef = useRef<Blob[]>([]);
@@ -118,8 +137,21 @@ export const ConversationPanel: React.FC<ConversationPanelProps> = ({
             Conversation Transcript
           </h2>
         </div>
-        <div className="text-[11px] font-medium text-[#475569]">
-          Voice & Text Fallback
+        <div className="flex items-center space-x-2">
+          {onTalkToAgent && (
+            <button
+              type="button"
+              onClick={onTalkToAgent}
+              className="inline-flex items-center space-x-1 text-[11px] font-semibold text-[#002E6E] bg-white border border-[#E1E8F0] px-2 py-1 rounded hover:bg-[#F5F7FA] transition-colors"
+              title="Pass journey state to specialist without repeating"
+            >
+              <Headphones className="w-3 h-3 text-[#00BAF2]" />
+              <span>Talk to Agent</span>
+            </button>
+          )}
+          <span className="text-[11px] font-medium text-[#475569] hidden sm:inline">
+            Voice & Text Fallback
+          </span>
         </div>
       </div>
 
@@ -179,6 +211,30 @@ export const ConversationPanel: React.FC<ConversationPanelProps> = ({
                     </div>
                   )}
 
+                  {/* "Why am I asking this?" Tooltip for Planner Questions */}
+                  {!isUser && targetFieldWhy && index === messages.length - 1 && (
+                    <div className="mt-2 pt-2 border-t border-[#E1E8F0]">
+                      <button
+                        type="button"
+                        onClick={() => setShowWhyTooltip(!showWhyTooltip)}
+                        className="inline-flex items-center space-x-1 text-[11px] font-semibold text-[#002E6E] hover:text-[#00BAF2] transition-colors"
+                        aria-label="Why am I asking this question?"
+                      >
+                        <HelpCircle className="w-3.5 h-3.5 text-[#00BAF2]" />
+                        <span>Why am I asking this?</span>
+                      </button>
+                      {showWhyTooltip && (
+                        <div className="mt-1.5 p-2.5 rounded bg-blue-50 border border-blue-200 text-[#1B2A41] text-[11px] leading-relaxed shadow-sm">
+                          <p className="font-semibold text-[#002E6E] mb-0.5 flex items-center space-x-1">
+                            <CheckCircle2 className="w-3 h-3 text-[#002E6E]" />
+                            <span>Purpose of this question:</span>
+                          </p>
+                          <p className="text-[#334155]">{targetFieldWhy}</p>
+                        </div>
+                      )}
+                    </div>
+                  )}
+
                   <span
                     className={`text-[10px] block mt-1.5 font-mono ${
                       isUser ? "text-blue-200" : "text-[#475569]"
@@ -215,6 +271,35 @@ export const ConversationPanel: React.FC<ConversationPanelProps> = ({
           >
             Dismiss
           </button>
+        </div>
+      )}
+
+      {/* Active Voice State Chip (Listening / Thinking / Speaking) */}
+      {voiceState !== "idle" && (
+        <div className="px-4 py-2 bg-blue-50/90 border-t border-blue-200 flex items-center justify-between text-xs text-[#002E6E]">
+          <div className="flex items-center space-x-2">
+            {voiceState === "listening" && (
+              <>
+                <span className="w-2.5 h-2.5 rounded-full bg-red-600 animate-ping" />
+                <span className="font-semibold text-red-700">Listening to your voice... (click mic or send text)</span>
+              </>
+            )}
+            {voiceState === "thinking" && (
+              <>
+                <Loader2 className="w-3.5 h-3.5 animate-spin text-[#002E6E]" />
+                <span className="font-semibold text-[#002E6E]">Thinking... validating numbers with deterministic rules</span>
+              </>
+            )}
+            {voiceState === "speaking" && (
+              <>
+                <Volume2 className="w-3.5 h-3.5 text-[#00BAF2] animate-pulse" />
+                <span className="font-semibold text-[#002E6E]">Speaking response via Sarvam TTS (bulbul:v3)...</span>
+              </>
+            )}
+          </div>
+          <span className="text-[11px] text-[#475569] font-medium hidden sm:inline">
+            Text input ready below
+          </span>
         </div>
       )}
 

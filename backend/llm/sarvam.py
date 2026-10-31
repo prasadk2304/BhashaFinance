@@ -133,9 +133,21 @@ class SarvamProvider(LLMProvider):
         Generates customer explanation grounded strictly in backend-computed facts.
         Prompt receives only backend-computed facts and must not add numbers, approval claims or advice.
         """
+        if tone == "calm":
+            tone_directive = (
+                "CALM URGENCY/DISTRESS STYLE:\n"
+                "- Acknowledge the user's situation in ONE short sentence.\n"
+                "- Give the concrete next step FIRST before anything else.\n"
+                "- Keep the explanation strictly UNDER 40 WORDS.\n"
+                "- Use a calm, reassuring, empathetic tone."
+            )
+        else:
+            tone_directive = f"Write in a {tone} tone."
+
         system_prompt = (
-            f"You are a customer service explainer for Paytm lending. "
-            f"Write a concise explanation in {language} with a {tone} tone.\n"
+            f"You are a customer service explainer for Paytm lending.\n"
+            f"{tone_directive}\n"
+            f"Language: {language}\n\n"
             "STRICT RULES:\n"
             "1. Base your explanation ONLY on the provided backend facts.\n"
             "2. NEVER invent or alter numbers, interest rates, or calculations.\n"

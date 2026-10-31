@@ -37,6 +37,7 @@ class PlannerStepResult(BaseModel):
     state: JourneyState
     next_action: str  # "ask_field" | "request_consent" | "submitted" | "completed" | "clarify"
     target_field: Optional[str] = None
+    target_field_why: Optional[str] = None
     prompt_message: str
     calculation: Optional[CalculationResult] = None
     is_sample: bool = True
@@ -285,6 +286,7 @@ def plan_next_step(
                         state=state,
                         next_action="clarify",
                         target_field=target_name,
+                        target_field_why=f_def.why_we_ask if f_def else None,
                         prompt_message=readback_msg,
                     )
 
@@ -322,6 +324,7 @@ def plan_next_step(
             state=state,
             next_action="ask_field",
             target_field=next_missing,
+            target_field_why=f_def.why_we_ask,
             prompt_message=prompt,
         )
 

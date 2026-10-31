@@ -16,6 +16,7 @@ class FieldDefinition(BaseModel):
     prompt_question: str
     hint: Optional[str] = None
     default_value: Optional[Any] = None
+    why_we_ask: Optional[str] = None
 
 
 class ProductSpec(BaseModel):
@@ -121,6 +122,7 @@ PERSONAL_LOAN_SPEC = ProductSpec(
             data_type="float",
             prompt_question="What is your net monthly take-home salary or income?",
             hint="e.g. 50,000 or 80k",
+            why_we_ask="We use your income to verify loan eligibility and ensure your total debt stays safely within the 50% FOIR limit.",
         ),
         "loan_amount": FieldDefinition(
             name="loan_amount",
@@ -129,6 +131,7 @@ PERSONAL_LOAN_SPEC = ProductSpec(
             data_type="float",
             prompt_question="How much loan amount do you need?",
             hint="e.g. 1.5 lakh, 80k, 28,000",
+            why_we_ask="We need your requested loan amount to compute the exact monthly EMI and interest schedule for your offers.",
         ),
         "tenure_months": FieldDefinition(
             name="tenure_months",
@@ -137,6 +140,7 @@ PERSONAL_LOAN_SPEC = ProductSpec(
             data_type="int",
             prompt_question="What repayment tenure would you prefer in months or years?",
             hint="e.g. 12 months, 2 years, 24",
+            why_we_ask="Tenure determines your monthly installment size and total interest payable over the loan duration.",
         ),
         "existing_emis": FieldDefinition(
             name="existing_emis",
@@ -146,6 +150,7 @@ PERSONAL_LOAN_SPEC = ProductSpec(
             prompt_question="Do you currently pay any monthly EMIs or loan obligations? If none, please say zero.",
             hint="e.g. 5,000 or zero",
             default_value=None,
+            why_we_ask="Existing debt obligations are required to calculate your Fixed Obligation to Income Ratio (FOIR) to prevent over-borrowing.",
         ),
     },
     calculate_fn=calculate_personal_loan_journey,
@@ -222,6 +227,7 @@ SIP_SPEC = ProductSpec(
             data_type="float",
             prompt_question="How much would you like to invest monthly in this SIP?",
             hint="e.g. 5,000 or 10k",
+            why_we_ask="Your monthly contribution defines how much principal will compound over time in the SIP.",
         ),
         "duration_years": FieldDefinition(
             name="duration_years",
@@ -230,6 +236,7 @@ SIP_SPEC = ProductSpec(
             data_type="float",
             prompt_question="For how many years do you plan to continue this investment?",
             hint="e.g. 3 years, 5 years, 10",
+            why_we_ask="Investment horizon determines how compound interest multiplies wealth over your chosen time period.",
         ),
         "expected_annual_return": FieldDefinition(
             name="expected_annual_return",
@@ -239,6 +246,7 @@ SIP_SPEC = ProductSpec(
             prompt_question="What expected annual return percentage would you like to benchmark? (Standard is 12%)",
             hint="e.g. 12%, 14 percent",
             default_value=12.0,
+            why_we_ask="Expected benchmark return rate provides an illustrative simulation of mutual fund growth.",
         ),
     },
     calculate_fn=calculate_sip_journey,
@@ -325,6 +333,7 @@ PAYMENT_HELP_SPEC = ProductSpec(
             data_type="str",
             prompt_question="Could you share your loan account number or registered mobile number?",
             hint="e.g. LOAN-1029 or 9876543210",
+            why_we_ask="Your loan account number allows us to locate your specific transaction records and auto-debit status.",
         ),
         "issue_type": FieldDefinition(
             name="issue_type",
@@ -332,6 +341,7 @@ PAYMENT_HELP_SPEC = ProductSpec(
             data_type="str",
             prompt_question="What issue are you facing: payment failed, auto-debit bounce, or requesting EMI restructure?",
             hint="e.g. auto debit bounce, payment failed, restructure",
+            why_we_ask="Knowing your exact issue lets us apply targeted resolutions like 48-hour auto-debit bounce charge waivers.",
         ),
         "amount_due": FieldDefinition(
             name="amount_due",
@@ -340,6 +350,7 @@ PAYMENT_HELP_SPEC = ProductSpec(
             data_type="float",
             prompt_question="What is the pending or overdue EMI amount?",
             hint="e.g. 4,500 or 5k",
+            why_we_ask="Your pending amount ensures we calculate the exact net payable balance after fee waivers.",
         ),
     },
     calculate_fn=calculate_payment_help_journey,
@@ -428,6 +439,7 @@ LOAN_REJECTION_SPEC = ProductSpec(
             data_type="str",
             prompt_question="Please enter or speak your previous loan application number.",
             hint="e.g. APP-8271",
+            why_we_ask="Your previous application ID links directly to the underwriting evaluation record to determine root causes.",
         ),
         "rejection_reason_code": FieldDefinition(
             name="rejection_reason_code",
@@ -435,6 +447,7 @@ LOAN_REJECTION_SPEC = ProductSpec(
             data_type="str",
             prompt_question="What reason was indicated: high obligations (HIGH_FOIR) or low credit score (LOW_CREDIT_SCORE)?",
             hint="e.g. HIGH_FOIR or LOW_CREDIT_SCORE",
+            why_we_ask="Knowing why the application was declined lets us generate a targeted 90-day recovery roadmap.",
         ),
         "current_score_or_foir": FieldDefinition(
             name="current_score_or_foir",
@@ -443,6 +456,7 @@ LOAN_REJECTION_SPEC = ProductSpec(
             data_type="float",
             prompt_question="What is your current FOIR percentage (e.g. 62%) or CIBIL score (e.g. 640)?",
             hint="e.g. 62 or 640",
+            why_we_ask="Your current score or debt ratio helps us simulate what-if scenarios to reach approval criteria.",
         ),
     },
     calculate_fn=calculate_loan_rejection_journey,
