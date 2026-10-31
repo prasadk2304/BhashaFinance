@@ -169,14 +169,17 @@ def plan_next_step(
     state: JourneyState,
     user_input: Optional[str] = None,
     spec: Optional[ProductSpec] = None,
+    extracted_fields: Optional[Dict[str, Any]] = None,
 ) -> PlannerStepResult:
     """
     Generic Planner logic:
     1. If currently AWAITING_CONSENT: check for explicit consent.
-    2. If user_input provided in COLLECTING: parse input for the active missing field.
-    3. Ask ONLY for the next missing required field.
-    4. Once all required fields are satisfied: run deterministic calculation and transition to AWAITING_CONSENT.
-    5. Enforce: No submission without explicit consent.
+    2. If user_input provided in COLLECTING: use extracted_fields (from LLMService)
+       or parse input deterministically for the active missing field.
+    3. If readback is required due to number mismatch, prompt for readback.
+    4. Ask ONLY for the next missing required field.
+    5. Once all required fields are satisfied: run deterministic calculation and transition to AWAITING_CONSENT.
+    6. Enforce: No submission without explicit consent.
     """
     if spec is None:
         spec = get_product_spec(state.journey_id)
@@ -245,11 +248,49 @@ def plan_next_step(
             )
 
     # -------------------------------------------------------------------------
-    # Case 2: In COLLECTING state - Parse input if provided
+    # Case 2: In COLLECTING state - Parse input or apply extracted_fields
     # -------------------------------------------------------------------------
     missing_fields = state.get_missing_required_fields(spec.required_fields)
 
-    if user_input and missing_fields:
+    # Check if pre-extracted fields from LLMService were provided
+    if extracted_fields and missing_fields:
+        target_name = missing_fields[0]
+        if target_name in extracted_fields:
+            field_info = extracted_fields[target_name]
+            f_val = getattr(field_info, "value", field_info.get("value") if isinstance(field_info, dict) else field_info)
+            f_status = getattr(field_info, "status", field_info.get("status", "confirmed") if isinstance(field_info, dict) else "confirmed")
+            f_source = getattr(field_info, "source", field_info.get("source", "llm_extraction") if isinstance(field_info, dict) else "llm_extraction")
+            readback_needed = getattr(field_info, "readback_required", field_info.get("readback_required", False) if isinstance(field_info, dict) else False)
+            readback_msg = getattr(field_info, "readback_message", field_info.get("readback_message", None) if isinstance(field_info, dict) else None)
+
+            if f_val is not None:
+                f_def = spec.field_definitions.get(target_name)
+                # Map to State Enums
+                status_enum = FieldStatus.CONFIRMED if f_status == "confirmed" else FieldStatus.INFERRED
+                source_enum = FieldSource.REGEX_PARSER if f_source == "regex_parser" else FieldSource.LLM_EXTRACTION
+
+                state.set_field(
+                    name=target_name,
+                    value=f_val,
+                    status=status_enum,
+                    source=source_enum,
+                    label=f_def.label if f_def else None,
+                    unit=f_def.unit if f_def else None,
+                    prompt_question=f_def.prompt_question if f_def else None,
+                )
+
+                if readback_needed and readback_msg:
+                    state.messages.append(MessageEntry(sender="assistant", text=readback_msg))
+                    return PlannerStepResult(
+                        state=state,
+                        next_action="clarify",
+                        target_field=target_name,
+                        prompt_message=readback_msg,
+                    )
+
+                missing_fields = state.get_missing_required_fields(spec.required_fields)
+    elif user_input and missing_fields:
+        # Regex parser extraction
         target_name = missing_fields[0]
         extracted_value = extract_field_with_regex(target_name, user_input, spec)
 
@@ -264,7 +305,6 @@ def plan_next_step(
                 unit=f_def.unit if f_def else None,
                 prompt_question=f_def.prompt_question if f_def else None,
             )
-            # Re-evaluate missing fields after setting
             missing_fields = state.get_missing_required_fields(spec.required_fields)
 
     # -------------------------------------------------------------------------

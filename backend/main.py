@@ -22,6 +22,7 @@ from backend.planner import (
     submit_journey_application,
     PlannerStepResult,
 )
+from backend.llm import llm_service
 from backend.rag import rag_service
 from backend.rules.emi import calculate_emi, EmiCalculationResult
 from backend.rules.foir import calculate_foir, FoirCalculationResult
@@ -218,8 +219,30 @@ async def handle_session_turn(
             for r in rag_results:
                 rag_context_text += f"- [{r.chunk.id}] {r.chunk.heading}: {r.chunk.content[:160]}...\n"
 
+    # Field extraction with LLM Service (Sarvam -> Ollama -> Regex fallback)
+    extracted_fields_meta = None
+    missing_fields = state.get_missing_required_fields(spec.required_fields)
+    if user_utterance and missing_fields and state.status == JourneyStatus.COLLECTING:
+        target_name = missing_fields[0]
+        f_def = spec.field_definitions.get(target_name)
+        schema = {target_name: f_def.data_type if f_def else "str"}
+        try:
+            ext_res = await llm_service.extract_with_fallback(
+                transcript=user_utterance,
+                schema=schema,
+                language=language_code or "en",
+            )
+            extracted_fields_meta = ext_res.field_metadata
+        except Exception:
+            extracted_fields_meta = None
+
     # Step the deterministic planner
-    step_result = plan_next_step(state=state, user_input=user_utterance if user_utterance else None, spec=spec)
+    step_result = plan_next_step(
+        state=state,
+        user_input=user_utterance if user_utterance else None,
+        spec=spec,
+        extracted_fields=extracted_fields_meta,
+    )
 
     reply = step_result.prompt_message
     if rag_context_text and step_result.next_action in ("request_consent", "submitted"):
