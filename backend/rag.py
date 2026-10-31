@@ -199,3 +199,4 @@ class KnowledgeBaseRAG:
 
 
 rag_service = KnowledgeBaseRAG()
+

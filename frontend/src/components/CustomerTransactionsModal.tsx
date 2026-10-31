@@ -139,3 +139,4 @@ export const CustomerTransactionsModal: React.FC<CustomerTransactionsModalProps>
     </div>
   );
 };
+

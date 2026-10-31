@@ -100,3 +100,4 @@ async def test_customer_transactions(async_client: httpx.AsyncClient):
     assert data["customer"]["name"] == "Prasad Sharma"
     assert len(data["transactions"]) >= 3
     assert data["transactions"][0]["sample_label"] == "Sample"
+

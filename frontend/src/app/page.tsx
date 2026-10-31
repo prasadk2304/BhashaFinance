@@ -1,13 +1,14 @@
 "use client";
 
 import React, { useState, useEffect } from "react";
-import { Product, TurnResponse } from "@/types";
+import { Product, TurnResponse, Transaction } from "@/types";
 import {
   fetchProducts,
   createSession,
   sendTurnMessage,
   confirmSession,
   createTicket,
+  fetchCustomerTransactions,
 } from "@/lib/api";
 import { TopBar } from "@/components/TopBar";
 import { StartScreen } from "@/components/StartScreen";
@@ -22,18 +23,27 @@ export default function Home() {
   const [activeSession, setActiveSession] = useState<TurnResponse | null>(null);
   const [selectedLanguage, setSelectedLanguage] = useState("en-IN");
   const [customerId, setCustomerId] = useState("CUST-1001");
+  const [customerTransactions, setCustomerTransactions] = useState<Transaction[]>([]);
   const [isThinking, setIsThinking] = useState(false);
   const [isConfirming, setIsConfirming] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [showTransactionsModal, setShowTransactionsModal] = useState(false);
+  const [createdTicketId, setCreatedTicketId] = useState<string | null>(null);
+  const [confirmedReferenceId, setConfirmedReferenceId] = useState<string | undefined>(undefined);
 
-  // Load initial product catalog
+  // Load initial product catalog and mock customer transactions
   useEffect(() => {
     async function load() {
       try {
         setLoadingProducts(true);
-        const data = await fetchProducts();
-        setProducts(data);
+        const [prodData, custData] = await Promise.all([
+          fetchProducts(),
+          fetchCustomerTransactions(customerId).catch(() => ({ customer: null, transactions: [] })),
+        ]);
+        setProducts(prodData);
+        if (custData && custData.transactions) {
+          setCustomerTransactions(custData.transactions);
+        }
       } catch (err: any) {
         setError("Unable to connect to BhashaFinance backend. Ensure FastAPI server is running on :8000.");
       } finally {
@@ -41,10 +51,12 @@ export default function Home() {
       }
     }
     load();
-  }, []);
+  }, [customerId]);
 
   const handleStartJourney = async (journeyId: string) => {
     setError(null);
+    setCreatedTicketId(null);
+    setConfirmedReferenceId(undefined);
     try {
       setIsThinking(true);
       const sessionData = await createSession(journeyId, customerId);
@@ -95,7 +107,8 @@ export default function Home() {
     if (!activeSession || isConfirming) return;
     try {
       setIsConfirming(true);
-      await confirmSession(activeSession.session_id, true, "Explicit customer consent granted");
+      const confRes = await confirmSession(activeSession.session_id, true, "Explicit customer consent granted");
+      setConfirmedReferenceId(confRes.reference_id);
       // Advance session state
       const updated = await sendTurnMessage(activeSession.session_id, {
         text: "I agree and give explicit consent",
@@ -127,20 +140,33 @@ export default function Home() {
   const handleCreateTicket = async () => {
     if (!activeSession) return;
     try {
-      await createTicket(
+      const ticket = await createTicket(
         activeSession.session_id,
         "auto_debit_waiver",
         "Disputed bounce fee on active loan with automated 48-hour waiver."
       );
-      alert("Sample service ticket created successfully!");
+      setCreatedTicketId(ticket.ticket_id);
+      alert(`Sample service ticket created successfully: ${ticket.ticket_id}`);
     } catch (err: any) {
       setError(err.message || "Failed to create ticket");
     }
   };
 
+  const handleSelectTransactionFromPicker = (txn: Transaction) => {
+    if (!activeSession) return;
+    // Auto-message into session
+    handleSendMessage(`Loan Account ${txn.account_id} with pending amount of ${txn.amount}`);
+  };
+
+  const handleAgentHandoff = () => {
+    alert("Live Support Handoff: Connecting to Paytm Lending Support Queue (Sample Queue Pos #1)... An advisor will assist shortly.");
+  };
+
   const handleReset = () => {
     setActiveSession(null);
     setError(null);
+    setCreatedTicketId(null);
+    setConfirmedReferenceId(undefined);
   };
 
   return (
@@ -203,6 +229,11 @@ export default function Home() {
                 onDeclineConsent={handleDeclineConsent}
                 onCreateTicket={handleCreateTicket}
                 isConfirming={isConfirming}
+                transactions={customerTransactions}
+                onSelectTransaction={handleSelectTransactionFromPicker}
+                onAgentHandoff={handleAgentHandoff}
+                createdTicketId={createdTicketId}
+                confirmedReferenceId={confirmedReferenceId}
               />
             </div>
           </div>
@@ -219,3 +250,4 @@ export default function Home() {
     </div>
   );
 }
+

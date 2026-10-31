@@ -11,3 +11,4 @@ Following an automated underwriting decline, a mandatory 90-day cooling-off inte
 
 ## Enhancing Approval Probability with Co-Applicants and Stable Income Proof
 If a single applicant's individual debt-to-income profile is constrained, adding an earning family member (spouse or parent) as a co-applicant can increase aggregate household income and lower the blended FOIR. Providing comprehensive digital bank statements demonstrating consistent salary credits or business cashflows without inward cheque bounces significantly improves automated underwriting scores upon reapplication.
+

@@ -99,3 +99,4 @@ export interface Ticket {
   created_at: string;
   sample_label: string;
 }
+

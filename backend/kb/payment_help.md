@@ -11,3 +11,4 @@ Borrowers encountering genuine temporary income disruption, medical emergencies,
 
 ## Instant Repayment Link and Digital Settlement
 Borrowers experiencing UPI mandate failure can execute repayment using verified alternative channels including debit cards, net banking, or Paytm UPI handle. The instant repayment token ensures immediate ledger updating, halting automated collection reminders and preventing negative credit bureau reporting during the active dispute resolution cycle.
+
