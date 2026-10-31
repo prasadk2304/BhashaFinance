@@ -161,3 +161,4 @@ class JourneyState(BaseModel):
             for k, v in self.fields.items()
             if v.value is not None and v.status in (FieldStatus.CONFIRMED, FieldStatus.INFERRED)
         }
+

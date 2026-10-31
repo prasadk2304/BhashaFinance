@@ -35,6 +35,18 @@ def get_db_connection() -> sqlite3.Connection:
                 FOREIGN KEY(session_id) REFERENCES sessions(session_id)
             )
         """)
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS tickets (
+                ticket_id TEXT PRIMARY KEY,
+                session_id TEXT NOT NULL,
+                category TEXT NOT NULL,
+                issue_description TEXT NOT NULL,
+                resolution_plan TEXT,
+                status TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                FOREIGN KEY(session_id) REFERENCES sessions(session_id)
+            )
+        """)
         conn.commit()
         _db_initialized = True
     return conn
@@ -128,3 +140,31 @@ def load_state(session_id: str) -> Optional[JourneyState]:
         data = json.loads(row["state_json"])
         return JourneyState.model_validate(data)
     return None
+
+def save_ticket(ticket: dict):
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("""
+        INSERT INTO tickets (ticket_id, session_id, category, issue_description, resolution_plan, status, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+    """, (
+        ticket["ticket_id"],
+        ticket["session_id"],
+        ticket.get("category", "support"),
+        ticket.get("issue_description", ""),
+        ticket.get("resolution_plan", ""),
+        ticket.get("status", "open"),
+        ticket.get("created_at", ""),
+    ))
+    conn.commit()
+    conn.close()
+
+
+def get_tickets_for_session(session_id: str) -> list[dict]:
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT * FROM tickets WHERE session_id = ?", (session_id,))
+    rows = cursor.fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+

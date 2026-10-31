@@ -85,3 +85,4 @@ def test_foir_input_validation():
 
     with pytest.raises(ValueError, match="FOIR threshold percentage must be between 0 and 100"):
         calculate_foir(monthly_income=50000, max_foir_threshold_pct=110)
+

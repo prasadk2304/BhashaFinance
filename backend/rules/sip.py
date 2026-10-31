@@ -90,3 +90,4 @@ def calculate_sip(
         future_value_rounded=int(round(future_value)),
         yearly_growth_sample=yearly_growth,
     )
+

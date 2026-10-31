@@ -144,3 +144,4 @@ class OllamaClient:
                 f"Here is your {journey_title} summary. All presented numbers are Sample figures "
                 "calculated deterministically based on standard financial rules."
             )
+

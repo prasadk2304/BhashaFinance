@@ -340,3 +340,4 @@ def submit_journey_application(state: JourneyState) -> Dict[str, Any]:
         "metrics": state.calculation.metrics if state.calculation else {},
         "disclosures": state.calculation.disclosures if state.calculation else [],
     }
+

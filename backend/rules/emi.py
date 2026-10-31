@@ -90,3 +90,4 @@ def calculate_emi(
         total_amount_payable=total_amount_rounded,
         amortization_sample=schedule,
     )
+

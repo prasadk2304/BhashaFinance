@@ -89,3 +89,4 @@ def test_percentage_parsing():
     assert parse_percentage("12.5 percent") == 12.5
     assert parse_percentage("14.2% p.a.") == 14.2
     assert parse_percentage("10 per cent per annum") == 10.0
+

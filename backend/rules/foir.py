@@ -86,3 +86,4 @@ def calculate_foir(
         excess_obligation=round(excess_obligation, 2),
         max_eligible_loan_amount=max_eligible_loan,
     )
+

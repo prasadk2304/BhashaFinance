@@ -167,3 +167,4 @@ def test_loan_rejection_journey_planner():
     assert state.status == JourneyStatus.AWAITING_CONSENT
     assert state.calculation.metrics["cooling_off_days"] == 90
     assert "Reduce FOIR below 45%" in state.calculation.metrics["target_metric"]
+
