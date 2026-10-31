@@ -2,6 +2,7 @@
 
 import React, { useState, useEffect } from "react";
 import { Product, TurnResponse, Transaction } from "@/types";
+import { DEMO_SCENARIOS } from "@/lib/demoScenarios";
 import {
   fetchProducts,
   createSession,
@@ -66,6 +67,17 @@ export default function Home() {
     } finally {
       setIsThinking(false);
     }
+  };
+
+  const handleLoadScenario = (journeyId: string) => {
+    const scenario = DEMO_SCENARIOS[journeyId];
+    if (!scenario) return;
+    setError(null);
+    setCreatedTicketId(null);
+    setConfirmedReferenceId(undefined);
+    // Deep copy seedData
+    const seeded = JSON.parse(JSON.stringify(scenario.seedData));
+    setActiveSession(seeded);
   };
 
   const handleSendMessage = async (text: string) => {
@@ -154,7 +166,6 @@ export default function Home() {
 
   const handleSelectTransactionFromPicker = (txn: Transaction) => {
     if (!activeSession) return;
-    // Auto-message into session
     handleSendMessage(`Loan Account ${txn.account_id} with pending amount of ${txn.amount}`);
   };
 
@@ -177,14 +188,15 @@ export default function Home() {
         onLanguageChange={setSelectedLanguage}
         customerId={customerId}
         onReset={handleReset}
+        onLoadScenario={handleLoadScenario}
         onViewTransactions={() => setShowTransactionsModal(true)}
       />
 
       {/* Global Error Notice */}
       {error && (
-        <div className="bg-red-50 border-b border-red-200 px-6 py-2 flex items-center justify-between text-xs text-red-700">
+        <div className="bg-red-50 border-b border-red-200 px-4 sm:px-6 py-2 flex items-center justify-between text-xs text-red-800">
           <div className="flex items-center space-x-2">
-            <AlertCircle className="w-4 h-4 flex-shrink-0" />
+            <AlertCircle className="w-4 h-4 flex-shrink-0 text-red-700" />
             <span>{error}</span>
           </div>
           <button onClick={() => setError(null)} className="font-semibold underline ml-4">
@@ -196,7 +208,7 @@ export default function Home() {
       {/* Main Content Area */}
       <main className="flex-1 flex flex-col">
         {loadingProducts ? (
-          <div className="flex-1 flex flex-col items-center justify-center space-y-2 py-20 text-xs text-[#6B7C93]">
+          <div className="flex-1 flex flex-col items-center justify-center space-y-2 py-20 text-xs text-[#475569]">
             <Loader2 className="w-6 h-6 animate-spin text-[#002E6E]" />
             <span>Connecting to BhashaFinance AI services...</span>
           </div>
@@ -204,12 +216,13 @@ export default function Home() {
           <StartScreen
             products={products}
             onSelectJourney={handleStartJourney}
+            onLoadScenario={handleLoadScenario}
             isLoading={isThinking}
           />
         ) : (
-          <div className="flex-1 max-w-7xl w-full mx-auto p-6 grid grid-cols-1 lg:grid-cols-12 gap-6 h-[calc(100vh-65px)]">
+          <div className="flex-1 max-w-7xl w-full mx-auto p-4 sm:p-6 grid grid-cols-1 lg:grid-cols-12 gap-6 min-h-[calc(100vh-65px)] lg:h-[calc(100vh-65px)]">
             {/* Left Column: Conversation */}
-            <div className="lg:col-span-7 h-full">
+            <div className="lg:col-span-7 h-[500px] lg:h-full">
               <ConversationPanel
                 messages={activeSession.state.messages || []}
                 citations={activeSession.citations || []}
@@ -221,7 +234,7 @@ export default function Home() {
             </div>
 
             {/* Right Column: Journey State Panel */}
-            <div className="lg:col-span-5 h-full">
+            <div className="lg:col-span-5 h-[650px] lg:h-full">
               <JourneyStatePanel
                 state={activeSession.state}
                 calculation={activeSession.results || activeSession.calculation}

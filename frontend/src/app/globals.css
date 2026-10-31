@@ -6,6 +6,7 @@
   --color-navy: #002e6e;
   --color-blue: #00baf2;
   --color-text: #1b2a41;
+  --color-muted: #475569; /* Slate-600: 5.6:1 contrast ratio against #FFFFFF and #F5F7FA, WCAG AA compliant */
   --color-page: #f5f7fa;
   --color-border: #e1e8f0;
 }
@@ -17,11 +18,18 @@ body {
   font-feature-settings: "cv02", "cv03", "cv04", "cv11";
   margin: 0;
   padding: 0;
+  -webkit-font-smoothing: antialiased;
 }
 
 /* Tabular numerals for monetary and financial figures */
 .tabular-nums {
   font-variant-numeric: tabular-nums;
+}
+
+/* Accessible Keyboard Focus Ring (WCAG 2.1 AA Compliance) */
+:focus-visible {
+  outline: 2px solid #002e6e;
+  outline-offset: 2px;
 }
 
 /* Clean scrollbar styling */
@@ -42,4 +50,3 @@ body {
 ::-webkit-scrollbar-thumb:hover {
   background: #94a3b8;
 }
-

@@ -2,7 +2,7 @@
 
 import React, { useState, useRef, useEffect } from "react";
 import { MessageEntry } from "@/types";
-import { Mic, MicOff, Send, Loader2, Volume2, ShieldCheck, User, Sparkles } from "lucide-react";
+import { Mic, MicOff, Send, Loader2, Volume2, ShieldCheck, User, MessageSquare } from "lucide-react";
 
 interface ConversationPanelProps {
   messages: MessageEntry[];
@@ -32,12 +32,10 @@ export const ConversationPanel: React.FC<ConversationPanelProps> = ({
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const audioPlayerRef = useRef<HTMLAudioElement | null>(null);
 
-  // Auto-scroll to latest message
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages, isThinking]);
 
-  // Voice state transition when thinking changes
   useEffect(() => {
     if (isThinking) {
       setVoiceState("thinking");
@@ -46,7 +44,6 @@ export const ConversationPanel: React.FC<ConversationPanelProps> = ({
     }
   }, [isThinking]);
 
-  // Play TTS audio if returned
   useEffect(() => {
     if (audioBase64) {
       try {
@@ -114,26 +111,26 @@ export const ConversationPanel: React.FC<ConversationPanelProps> = ({
   return (
     <div className="flex flex-col h-full bg-white rounded-lg border border-[#E1E8F0] overflow-hidden">
       {/* Conversation Header */}
-      <div className="px-5 py-3 border-b border-[#E1E8F0] flex items-center justify-between bg-[#F5F7FA]">
+      <div className="px-4 py-3 border-b border-[#E1E8F0] flex items-center justify-between bg-[#F5F7FA]">
         <div className="flex items-center space-x-2">
-          <div className="w-2.5 h-2.5 rounded-full bg-[#00BAF2]" />
+          <div className="w-2.5 h-2.5 rounded-full bg-[#002E6E]" />
           <h2 className="text-xs font-semibold uppercase tracking-wider text-[#1B2A41]">
-            Interactive Assistant
+            Conversation Transcript
           </h2>
         </div>
-        <div className="text-[11px] text-[#6B7C93] flex items-center space-x-1">
-          <span>Voice & Text Enabled</span>
+        <div className="text-[11px] font-medium text-[#475569]">
+          Voice & Text Fallback
         </div>
       </div>
 
       {/* Transcript Messages Feed */}
-      <div className="flex-1 overflow-y-auto p-5 space-y-4">
+      <div className="flex-1 overflow-y-auto p-4 space-y-4">
         {messages.length === 0 ? (
-          <div className="h-full flex flex-col items-center justify-center text-center p-6 text-[#6B7C93]">
-            <Sparkles className="w-8 h-8 text-[#00BAF2] mb-2" />
-            <p className="text-xs font-medium">Session initialized</p>
-            <p className="text-[11px] mt-1 text-[#6B7C93]">
-              Speak into your microphone or type an amount below (e.g. "80k", "1.5 lakh").
+          <div className="h-full flex flex-col items-center justify-center text-center p-6 text-[#475569]">
+            <MessageSquare className="w-8 h-8 text-[#002E6E] mb-2" />
+            <p className="text-xs font-semibold text-[#1B2A41]">Session Started</p>
+            <p className="text-[11px] mt-1 text-[#475569] max-w-xs">
+              Speak using the microphone or type below (e.g. "80k", "1.5 lakh", "2 years").
             </p>
           </div>
         ) : (
@@ -148,8 +145,8 @@ export const ConversationPanel: React.FC<ConversationPanelProps> = ({
               >
                 {/* Avatar Icon */}
                 <div
-                  className={`w-7 h-7 rounded-lg flex items-center justify-center flex-shrink-0 text-white ${
-                    isUser ? "bg-[#002E6E]" : "bg-[#00BAF2]"
+                  className={`w-7 h-7 rounded flex items-center justify-center flex-shrink-0 text-white ${
+                    isUser ? "bg-[#002E6E]" : "bg-[#1B2A41]"
                   }`}
                 >
                   {isUser ? <User className="w-3.5 h-3.5" /> : <ShieldCheck className="w-3.5 h-3.5" />}
@@ -157,7 +154,7 @@ export const ConversationPanel: React.FC<ConversationPanelProps> = ({
 
                 {/* Message Bubble */}
                 <div
-                  className={`max-w-[80%] rounded-lg px-4 py-2.5 text-xs leading-relaxed ${
+                  className={`max-w-[85%] rounded-lg px-4 py-2.5 text-xs leading-relaxed ${
                     isUser
                       ? "bg-[#002E6E] text-white"
                       : "bg-[#F5F7FA] text-[#1B2A41] border border-[#E1E8F0]"
@@ -165,16 +162,16 @@ export const ConversationPanel: React.FC<ConversationPanelProps> = ({
                 >
                   <p className="whitespace-pre-line">{msg.text}</p>
 
-                  {/* Render citations pills if present */}
+                  {/* Grounding Citations Pills */}
                   {!isUser && citations.length > 0 && index === messages.length - 1 && (
-                    <div className="mt-2.5 pt-2 border-t border-[#E1E8F0]/80 flex flex-wrap gap-1.5 items-center">
-                      <span className="text-[10px] uppercase font-semibold text-[#6B7C93]">
-                        Grounded in:
+                    <div className="mt-2.5 pt-2 border-t border-[#E1E8F0] flex flex-wrap gap-1.5 items-center">
+                      <span className="text-[10px] uppercase font-bold text-[#475569]">
+                        Policy Sources:
                       </span>
                       {citations.map((cId) => (
                         <span
                           key={cId}
-                          className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-white border border-[#E1E8F0] text-[#002E6E]"
+                          className="text-[10px] font-mono font-medium px-1.5 py-0.5 rounded bg-white border border-[#E1E8F0] text-[#002E6E]"
                         >
                           {cId}
                         </span>
@@ -183,8 +180,8 @@ export const ConversationPanel: React.FC<ConversationPanelProps> = ({
                   )}
 
                   <span
-                    className={`text-[9px] block mt-1.5 ${
-                      isUser ? "text-blue-100" : "text-[#6B7C93]"
+                    className={`text-[10px] block mt-1.5 font-mono ${
+                      isUser ? "text-blue-200" : "text-[#475569]"
                     }`}
                   >
                     {new Date(msg.timestamp).toLocaleTimeString([], {
@@ -198,11 +195,11 @@ export const ConversationPanel: React.FC<ConversationPanelProps> = ({
           })
         )}
 
-        {/* Thinking indicator */}
+        {/* Thinking Indicator */}
         {isThinking && (
-          <div className="flex items-center space-x-2 text-xs text-[#6B7C93] py-2">
-            <Loader2 className="w-4 h-4 animate-spin text-[#00BAF2]" />
-            <span>Processing deterministic calculations...</span>
+          <div className="flex items-center space-x-2 text-xs text-[#475569] py-2">
+            <Loader2 className="w-4 h-4 animate-spin text-[#002E6E]" />
+            <span>Calculating deterministic rules...</span>
           </div>
         )}
         <div ref={messagesEndRef} />
@@ -210,11 +207,11 @@ export const ConversationPanel: React.FC<ConversationPanelProps> = ({
 
       {/* Voice Error Banner */}
       {voiceError && (
-        <div className="px-4 py-1.5 bg-amber-50 border-t border-amber-200 text-amber-800 text-[11px] flex items-center justify-between">
+        <div className="px-4 py-2 bg-amber-50 border-t border-amber-200 text-amber-900 text-xs flex items-center justify-between">
           <span>{voiceError}</span>
           <button
             onClick={() => setVoiceError(null)}
-            className="text-amber-900 font-semibold hover:underline"
+            className="text-amber-950 font-bold underline ml-2"
           >
             Dismiss
           </button>
@@ -222,26 +219,27 @@ export const ConversationPanel: React.FC<ConversationPanelProps> = ({
       )}
 
       {/* Input Controls Bar */}
-      <div className="p-3.5 border-t border-[#E1E8F0] bg-[#F5F7FA]">
+      <div className="p-3 border-t border-[#E1E8F0] bg-[#F5F7FA]">
         <div className="flex items-center space-x-2">
-          {/* Mic Button with state styling */}
+          {/* Mic Button */}
           <button
             type="button"
             onClick={voiceState === "listening" ? handleStopRecording : handleStartRecording}
             disabled={isThinking}
-            className={`w-10 h-10 rounded-lg flex items-center justify-center flex-shrink-0 transition-all ${
+            aria-label={voiceState === "listening" ? "Stop microphone recording" : "Start microphone recording"}
+            className={`w-10 h-10 rounded flex items-center justify-center flex-shrink-0 transition-colors ${
               voiceState === "listening"
-                ? "bg-red-500 text-white animate-pulse"
+                ? "bg-red-600 text-white"
                 : voiceState === "speaking"
-                ? "bg-[#00BAF2] text-white"
-                : "bg-white border border-[#E1E8F0] text-[#002E6E] hover:bg-[#E1E8F0]/50"
+                ? "bg-[#002E6E] text-white"
+                : "bg-white border border-[#E1E8F0] text-[#002E6E] hover:bg-[#E1E8F0]/40"
             }`}
-            title={voiceState === "listening" ? "Stop Recording" : "Speak via Voice"}
+            title={voiceState === "listening" ? "Stop Recording" : "Speak via Microphone"}
           >
             {voiceState === "listening" ? (
               <MicOff className="w-4 h-4" />
             ) : voiceState === "speaking" ? (
-              <Volume2 className="w-4 h-4 animate-bounce" />
+              <Volume2 className="w-4 h-4" />
             ) : (
               <Mic className="w-4 h-4" />
             )}
@@ -255,12 +253,14 @@ export const ConversationPanel: React.FC<ConversationPanelProps> = ({
               onChange={(e) => setInputText(e.target.value)}
               placeholder="Speak or type (e.g. '80k', '1.5 lakh', '2 years')..."
               disabled={isThinking}
-              className="flex-1 h-10 px-3.5 rounded-lg border border-[#E1E8F0] bg-white text-xs text-[#1B2A41] placeholder-[#6B7C93] focus:outline-none focus:border-[#002E6E] transition-colors"
+              aria-label="User response input"
+              className="flex-1 h-10 px-3 rounded border border-[#E1E8F0] bg-white text-xs text-[#1B2A41] placeholder-[#475569] focus:outline-none focus:border-[#002E6E]"
             />
             <button
               type="submit"
               disabled={isThinking || !inputText.trim()}
-              className="h-10 px-4 rounded-lg bg-[#002E6E] text-white text-xs font-semibold flex items-center justify-center space-x-1 hover:bg-[#002456] transition-colors disabled:opacity-50"
+              aria-label="Send message"
+              className="h-10 px-4 rounded bg-[#002E6E] text-white text-xs font-semibold flex items-center justify-center space-x-1 hover:bg-[#002456] transition-colors disabled:opacity-50"
             >
               <span>Send</span>
               <Send className="w-3.5 h-3.5" />
@@ -271,4 +271,3 @@ export const ConversationPanel: React.FC<ConversationPanelProps> = ({
     </div>
   );
 };
-

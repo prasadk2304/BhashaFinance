@@ -17,9 +17,9 @@ const config: Config = {
           card: "#FFFFFF",
           border: "#E1E8F0",
           success: "#0F9D58",
-          warning: "#F4B400",
-          danger: "#DB4437",
-          muted: "#6B7C93",
+          warning: "#B45309", // Darker amber for WCAG AA
+          danger: "#B91C1C",  // Darker red for WCAG AA
+          muted: "#475569",   // Slate-600: > 5.5:1 contrast ratio
         },
       },
       fontFamily: {
@@ -43,4 +43,3 @@ const config: Config = {
   plugins: [],
 };
 export default config;
-
