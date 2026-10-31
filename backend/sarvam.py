@@ -17,6 +17,7 @@ from pathlib import Path
 import tempfile
 import time
 from typing import Any, Dict, Iterator, Optional, Union
+import httpx
 from pydantic import BaseModel
 
 try:
@@ -105,7 +106,13 @@ class SarvamService:
         if self._client is None:
             if SarvamAI is None:
                 raise SarvamUnavailable("sarvamai SDK is not installed.")
-            self._client = SarvamAI(api_subscription_key=self.api_key)
+            # Avoid inherited proxy settings that cause SDK ConnectError even
+            # when api.sarvam.ai itself is reachable from this machine.
+            direct_client = httpx.Client(timeout=20.0, trust_env=False)
+            self._client = SarvamAI(
+                api_subscription_key=self.api_key,
+                httpx_client=direct_client,
+            )
         return self._client
 
     def set_client(self, client: Any):

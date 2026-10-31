@@ -132,11 +132,21 @@ async def test_end_to_end_journey_flow_with_consent(async_client: httpx.AsyncCli
     sub_fail = await async_client.post(f"/api/journey/submit?session_id={sess_id}")
     assert sub_fail.status_code == 403
 
-    # 7. Provide explicit consent via message
+    # 7. Personal-loan consent opens the least-data document-readiness check.
     m5 = await async_client.post("/api/journey/message", json={"session_id": sess_id, "text": "Yes, I agree"})
-    assert m5.json()["next_action"] == "submitted"
+    assert m5.json()["next_action"] == "document_review"
 
-    # 8. Submit now succeeds
+    # 8. Confirm synthetic availability only; no document content is submitted.
+    for _ in range(5):
+        doc_step = await async_client.post("/api/journey/message", json={"session_id": sess_id, "text": "yes"})
+        assert doc_step.status_code == 200
+    assert doc_step.json()["next_action"] == "request_review_consent"
+
+    # 9. A separate affirmative creates the masked human-review handoff.
+    handoff = await async_client.post("/api/journey/message", json={"session_id": sess_id, "text": "I agree"})
+    assert handoff.json()["next_action"] == "review_submitted"
+
+    # 10. Submit now succeeds
     sub_success = await async_client.post(f"/api/journey/submit?session_id={sess_id}")
     assert sub_success.status_code == 200
     assert sub_success.json()["status"] == "success"

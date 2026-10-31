@@ -19,9 +19,12 @@ from backend.audio import convert_to_16k_mono_wav, verify_ffmpeg_on_startup
 from backend.config import settings, SUPPORTED_LANGUAGES
 from backend.customers import get_mock_transactions, MOCK_CUSTOMERS
 from backend.database import (
+    create_review_case,
+    get_review_case_for_session,
     get_tickets_for_session,
     init_db,
     load_state,
+    request_review_material,
     save_state,
     save_ticket,
 )
@@ -42,6 +45,8 @@ from backend.rules.sip import calculate_sip, SipCalculationResult
 from backend.rules.spoken_numbers import convert_amounts_in_text
 from backend.sarvam import sarvam_service, SarvamUnavailable, CACHE_DIR
 from backend.state import JourneyState, JourneyStatus, MessageEntry
+from backend.voice_router import classify_journey_intent
+from backend.privacy import redact_sensitive_text
 
 
 @asynccontextmanager
@@ -113,6 +118,7 @@ class CreateSessionRequest(BaseModel):
     journey_id: str
     customer_id: Optional[str] = "CUST-1001"
     session_id: Optional[str] = None
+    language_code: Optional[str] = None
 
 
 class TurnResponse(BaseModel):
@@ -129,6 +135,7 @@ class TurnResponse(BaseModel):
     audio_base64: Optional[str] = None
     reply_audio_url: Optional[str] = None
     transcript: Optional[str] = None
+    review_case: Optional[Dict[str, Any]] = None
 
 
 @app.post("/sessions", response_model=TurnResponse)
@@ -142,7 +149,8 @@ def create_session(req: CreateSessionRequest):
         raise HTTPException(status_code=400, detail=f"Invalid journey_id: {req.journey_id}")
 
     session_id = req.session_id or f"sess_{uuid.uuid4().hex[:12]}"
-    state = initialize_journey(session_id=session_id, journey_id=req.journey_id)
+    target_lang = validate_language_code(req.language_code)
+    state = initialize_journey(session_id=session_id, journey_id=req.journey_id, language_code=target_lang)
 
     # Initial planner step asks for the first missing required field
     step_result = plan_next_step(state=state, user_input=None, spec=spec)
@@ -151,8 +159,8 @@ def create_session(req: CreateSessionRequest):
     reply = add_inline_definitions(step_result.prompt_message)
     reply_audio_url = None
     try:
-        spoken = convert_amounts_in_text(reply, language_code=settings.default_language)
-        mp3 = sarvam_service.tts(text=spoken, lang=settings.default_language)
+        spoken = build_spoken_reply(reply, state.language_code)
+        mp3 = sarvam_service.tts(text=spoken, lang=state.language_code)
         reply_audio_url = f"/api/voice/audio/{mp3.name}"
     except Exception:
         reply_audio_url = None
@@ -170,6 +178,7 @@ def create_session(req: CreateSessionRequest):
         calculation=calc_dump,
         citations=[],
         reply_audio_url=reply_audio_url,
+        review_case=get_review_case_for_session(session_id),
     )
 
 
@@ -183,6 +192,7 @@ def get_session(session_id: str):
     return {
         "state": state.model_dump(),
         "tickets": tickets,
+        "review_case": get_review_case_for_session(session_id),
     }
 
 
@@ -205,6 +215,27 @@ def validate_language_code(code: Optional[str]) -> str:
         status_code=400,
         detail=f"Unsupported language code '{code}'. Supported: {list(SUPPORTED_LANGUAGES.keys())}",
     )
+
+
+def build_spoken_reply(reply: str, language_code: str) -> str:
+    """Return a language-correct, number-safe version of an assistant reply for TTS.
+
+    Journey prompts are authored in English. For Hindi and Marathi sessions,
+    translate the assistant's already-safe reply before handing it to Sarvam
+    TTS. Translation is deliberately outside the input/extraction path and a
+    service failure leaves the safe English reply available for synthesis.
+    """
+    spoken_reply = reply
+    if language_code != "en-IN":
+        try:
+            spoken_reply = sarvam_service.translate(
+                text=reply,
+                src="en-IN",
+                tgt=language_code,
+            )
+        except Exception as err:
+            logger.warning("Reply translation degraded gracefully: %s", type(err).__name__)
+    return convert_amounts_in_text(spoken_reply, language_code=language_code)
 
 
 # ==============================================================================
@@ -242,7 +273,7 @@ async def voice_stt(
     try:
         converted_wav = convert_to_16k_mono_wav(tmp_in_path)
         transcript = sarvam_service.stt(path=converted_wav, lang=target_lang)
-        return {"transcript": transcript, "language_code": target_lang}
+        return {"transcript": redact_sensitive_text(transcript).text, "language_code": target_lang}
     except (SarvamUnavailable, Exception) as err:
         logger.warning("Voice STT endpoint failed: %s", type(err).__name__)
         return JSONResponse(
@@ -257,6 +288,45 @@ async def voice_stt(
                 converted_wav.unlink()
         except Exception:
             pass
+
+
+@app.post("/api/voice/route")
+async def route_voice_intent(
+    audio: UploadFile = File(...),
+    language_code: Optional[str] = Form(None),
+):
+    """Transcribe a home-agent utterance and safely choose an existing journey."""
+    target_lang = validate_language_code(language_code)
+    content = await audio.read()
+    if len(content) > 10 * 1024 * 1024:
+        raise HTTPException(status_code=400, detail="Audio file exceeds 10 MB limit.")
+
+    suffix = Path(audio.filename or "voice.webm").suffix or ".webm"
+    with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp_in:
+        tmp_in.write(content)
+        tmp_in_path = Path(tmp_in.name)
+
+    converted_wav = None
+    try:
+        converted_wav = convert_to_16k_mono_wav(tmp_in_path)
+        transcript = redact_sensitive_text(sarvam_service.stt(path=converted_wav, lang=target_lang).strip()).text
+        route = classify_journey_intent(transcript)
+        return {
+            "transcript": transcript,
+            "journey_id": route.journey_id,
+            "needs_clarification": route.needs_clarification,
+            "prompt": route.prompt,
+        }
+    except (SarvamUnavailable, Exception) as err:
+        logger.warning("Home voice routing failed: %s", type(err).__name__)
+        return JSONResponse(status_code=503, content={"fallback": "text", "detail": "Voice routing is unavailable. Please type instead."})
+    finally:
+        for path in (tmp_in_path, converted_wav):
+            try:
+                if path and path.exists():
+                    path.unlink()
+            except Exception:
+                pass
 
 
 class TtsRequest(BaseModel):
@@ -321,7 +391,7 @@ async def handle_session_turn(
     if not state:
         raise HTTPException(status_code=404, detail="Session not found.")
 
-    target_lang = settings.default_language
+    target_lang = state.language_code
     user_utterance = ""
     content_type = request.headers.get("content-type", "")
 
@@ -369,9 +439,19 @@ async def handle_session_turn(
         elif text:
             user_utterance = text.strip()
 
+    # An explicit per-turn choice updates the session for all later audio.
+    state.language_code = target_lang
+
     spec = get_product_spec(state.journey_id)
     if not spec:
         raise HTTPException(status_code=400, detail=f"Product spec missing for {state.journey_id}")
+
+    # The raw microphone/text value is intentionally discarded at this
+    # boundary. State, RAG, LLMs, API responses, and later audit records use
+    # only the irreversible redacted representation.
+    redacted_input = redact_sensitive_text(user_utterance)
+    user_utterance = redacted_input.text
+    state.masked_previews.update(redacted_input.previews)
 
     # RAG Grounding for payment_help and loan_rejection
     citations: List[str] = []
@@ -419,6 +499,10 @@ async def handle_session_turn(
     # Plain-language inline definitions on first mention
     reply = add_inline_definitions(reply)
 
+    review_case = None
+    if step_result.next_action == "review_submitted":
+        review_case = create_review_case(step_result.state)
+
     # Persist state after EVERY turn!
     save_state(step_result.state)
 
@@ -427,7 +511,7 @@ async def handle_session_turn(
     audio_base64 = None
 
     try:
-        spoken_reply = convert_amounts_in_text(reply, language_code=target_lang)
+        spoken_reply = build_spoken_reply(reply, target_lang)
         mp3_path = sarvam_service.tts(text=spoken_reply, lang=target_lang)
         reply_audio_url = f"/api/voice/audio/{mp3_path.name}"
         if synthesize_speech and mp3_path.exists():
@@ -451,6 +535,7 @@ async def handle_session_turn(
         audio_base64=audio_base64,
         reply_audio_url=reply_audio_url,
         transcript=user_utterance if user_utterance else None,
+        review_case=review_case or get_review_case_for_session(session_id),
     )
 
 
@@ -470,9 +555,17 @@ def confirm_session(session_id: str, req: ConfirmRequest):
     if not state:
         raise HTTPException(status_code=404, detail="Session not found.")
 
+    review_case = None
     if req.consent_granted:
-        state.consent.grant(text=req.consent_text or "User confirmed consent", method=req.method)
-        state.status = JourneyStatus.SUBMITTED
+        consent_text = redact_sensitive_text(req.consent_text or "User confirmed consent").text
+        spec = get_product_spec(state.journey_id)
+        if state.status == JourneyStatus.AWAITING_CONSENT and spec:
+            step = plan_next_step(state, consent_text, spec=spec)
+            review_case = create_review_case(state) if step.next_action == "review_submitted" else None
+        else:
+            state.consent.grant(text=consent_text, method=req.method)
+            state.status = JourneyStatus.SUBMITTED
+            review_case = None
     else:
         state.consent.revoke()
         state.status = JourneyStatus.COLLECTING
@@ -484,7 +577,38 @@ def confirm_session(session_id: str, req: ConfirmRequest):
         "consent": state.consent.model_dump(),
         "is_sample": True,
         "reference_id": f"SAMPLE-PAYTM-{abs(hash(session_id)) % 1000000:06d}",
+        "review_case": review_case or get_review_case_for_session(session_id),
     }
+
+
+@app.get("/sessions/{session_id}/review")
+def get_session_review(session_id: str):
+    """Return the customer-safe masked status of a demo human-review case."""
+    if not load_state(session_id):
+        raise HTTPException(status_code=404, detail="Session not found.")
+    review_case = get_review_case_for_session(session_id)
+    if not review_case:
+        raise HTTPException(status_code=404, detail="No review case exists for this session.")
+    return {"review_case": review_case, "is_sample": True}
+
+
+class ReviewMaterialRequest(BaseModel):
+    material_key: str
+    message: str
+
+
+@app.post("/review-cases/{review_case_id}/material-request")
+def create_review_material_request(review_case_id: str, req: ReviewMaterialRequest):
+    """Demo reviewer action: request a named checklist item without raw data."""
+    try:
+        review_case = request_review_material(
+            review_case_id,
+            req.material_key,
+            redact_sensitive_text(req.message).text,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return {"review_case": review_case, "is_sample": True}
 
 
 class CreateTicketRequest(BaseModel):
@@ -507,8 +631,8 @@ def create_ticket(session_id: str, req: CreateTicketRequest):
         "ticket_id": ticket_id,
         "session_id": session_id,
         "category": req.category,
-        "issue_description": req.issue_description,
-        "resolution_plan": req.resolution_plan or "Pending agent review / automated 48-hour waiver applied",
+        "issue_description": redact_sensitive_text(req.issue_description).text,
+        "resolution_plan": redact_sensitive_text(req.resolution_plan or "Pending agent review / automated 48-hour waiver applied").text,
         "status": "open",
         "created_at": datetime.now(timezone.utc).isoformat(),
         "sample_label": "Sample",

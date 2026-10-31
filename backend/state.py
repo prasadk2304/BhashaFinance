@@ -66,8 +66,30 @@ class JourneyStatus(str, Enum):
     COLLECTING = "collecting"
     CALCULATED = "calculated"
     AWAITING_CONSENT = "awaiting_consent"
+    DOCUMENT_REVIEW = "document_review"
+    AWAITING_REVIEW_CONSENT = "awaiting_review_consent"
     SUBMITTED = "submitted"
     REJECTED = "rejected"
+
+
+class DocumentStatus(str, Enum):
+    NEEDED = "needed"
+    READY = "ready"
+    MISSING = "missing"
+    REQUESTED = "requested"
+
+
+class DocumentChecklistItem(BaseModel):
+    key: str
+    label: str
+    purpose: str
+    status: DocumentStatus = DocumentStatus.NEEDED
+    required: bool = True
+
+
+class ReadinessResult(BaseModel):
+    outcome: str
+    factors: List[str] = PydanticField(default_factory=list)
 
 
 class CalculationResult(BaseModel):
@@ -90,10 +112,15 @@ class MessageEntry(BaseModel):
 class JourneyState(BaseModel):
     session_id: str
     journey_id: str
+    language_code: str = "mr-IN"
     status: JourneyStatus = JourneyStatus.COLLECTING
     fields: Dict[str, Field] = PydanticField(default_factory=dict)
+    masked_previews: Dict[str, str] = PydanticField(default_factory=dict)
     calculation: Optional[CalculationResult] = None
     consent: ConsentState = PydanticField(default_factory=ConsentState)
+    document_checklist: List[DocumentChecklistItem] = PydanticField(default_factory=list)
+    review_consent: ConsentState = PydanticField(default_factory=ConsentState)
+    review_case_id: Optional[str] = None
     messages: List[MessageEntry] = PydanticField(default_factory=list)
     created_at: str = PydanticField(default_factory=lambda: datetime.now(timezone.utc).isoformat())
     updated_at: str = PydanticField(default_factory=lambda: datetime.now(timezone.utc).isoformat())

@@ -1,4 +1,5 @@
 import logging
+import re
 from typing import Any, Dict, List, Optional
 
 from backend.config import settings
@@ -11,6 +12,7 @@ from backend.rules.parser import (
     parse_percentage,
     parse_tenure_months,
 )
+from backend.privacy import redact_sensitive_text
 
 logger = logging.getLogger(__name__)
 
@@ -66,6 +68,9 @@ class LLMService:
 
         Security: Never logs transcripts or keys.
         """
+        # Defense in depth: callers must redact input, but never allow an
+        # accidental raw transcript to cross the LLM provider boundary.
+        transcript = redact_sensitive_text(transcript).text
         raw_extracted: Dict[str, Any] = {}
         successful_source: str = "regex_parser"
 
@@ -234,11 +239,11 @@ class LLMService:
                 # Deterministic regex / pattern extraction for strings in fallback mode
                 parsed_str = None
                 if "id" in field_name or "code" in field_name or "account" in field_name:
-                    id_matches = re.findall(r"[A-Za-z0-9]+(?:[-_][A-Za-z0-9]+)+", transcript)
-                    if id_matches:
-                        parsed_str = id_matches[0]
-                    elif transcript.strip():
+                    if re.fullmatch(r"\[[A-Z_]+_REDACTED\]", transcript.strip()):
                         parsed_str = transcript.strip()
+                    elif transcript.strip():
+                        id_matches = re.findall(r"[A-Za-z0-9]+(?:[-_][A-Za-z0-9]+)+", transcript)
+                        parsed_str = id_matches[0] if id_matches else transcript.strip()
                 elif field_name == "issue_type":
                     lower = transcript.lower()
                     if "bounce" in lower or "debit" in lower:

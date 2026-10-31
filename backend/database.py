@@ -1,7 +1,10 @@
 import json
 import sqlite3
+from datetime import datetime, timezone
 from typing import Optional
+import uuid
 from backend.config import settings
+from backend.planner import build_review_readiness
 from backend.state import JourneyState
 
 
@@ -47,6 +50,28 @@ def get_db_connection() -> sqlite3.Connection:
                 FOREIGN KEY(session_id) REFERENCES sessions(session_id)
             )
         """)
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS review_cases (
+                review_case_id TEXT PRIMARY KEY,
+                session_id TEXT UNIQUE NOT NULL,
+                journey_id TEXT NOT NULL,
+                status TEXT NOT NULL,
+                packet_json TEXT NOT NULL,
+                readiness_json TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+        """)
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS review_requests (
+                request_id TEXT PRIMARY KEY,
+                review_case_id TEXT NOT NULL,
+                material_key TEXT NOT NULL,
+                message TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                FOREIGN KEY(review_case_id) REFERENCES review_cases(review_case_id)
+            )
+        """)
         conn.commit()
         _db_initialized = True
     return conn
@@ -78,6 +103,28 @@ def init_db():
             method TEXT,
             timestamp TEXT NOT NULL,
             FOREIGN KEY(session_id) REFERENCES sessions(session_id)
+        )
+    """)
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS review_cases (
+            review_case_id TEXT PRIMARY KEY,
+            session_id TEXT UNIQUE NOT NULL,
+            journey_id TEXT NOT NULL,
+            status TEXT NOT NULL,
+            packet_json TEXT NOT NULL,
+            readiness_json TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        )
+    """)
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS review_requests (
+            request_id TEXT PRIMARY KEY,
+            review_case_id TEXT NOT NULL,
+            material_key TEXT NOT NULL,
+            message TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            FOREIGN KEY(review_case_id) REFERENCES review_cases(review_case_id)
         )
     """)
 
@@ -167,4 +214,89 @@ def get_tickets_for_session(session_id: str) -> list[dict]:
     rows = cursor.fetchall()
     conn.close()
     return [dict(r) for r in rows]
+
+
+def create_review_case(state: JourneyState) -> dict:
+    """Persist only the masked demo review packet for an explicitly consented handoff."""
+    if not state.review_consent.granted:
+        raise PermissionError("Explicit review-handoff consent is required.")
+
+    init_db()
+    now = datetime.now(timezone.utc).isoformat()
+    review_case_id = state.review_case_id or f"REV-{uuid.uuid4().hex[:8].upper()}"
+    readiness = build_review_readiness(state).model_dump()
+    packet = {
+        "session_id": state.session_id,
+        "journey_id": state.journey_id,
+        "fields": {name: field.model_dump() for name, field in state.fields.items()},
+        "masked_previews": state.masked_previews,
+        "document_checklist": [item.model_dump() for item in state.document_checklist],
+        "review_consent": state.review_consent.model_dump(),
+    }
+    conn = get_db_connection()
+    conn.execute(
+        """
+        INSERT INTO review_cases (review_case_id, session_id, journey_id, status, packet_json, readiness_json, created_at, updated_at)
+        VALUES (?, ?, ?, 'pending', ?, ?, ?, ?)
+        ON CONFLICT(session_id) DO UPDATE SET
+            packet_json=excluded.packet_json,
+            readiness_json=excluded.readiness_json,
+            updated_at=excluded.updated_at
+        """,
+        (review_case_id, state.session_id, state.journey_id, json.dumps(packet), json.dumps(readiness), now, now),
+    )
+    conn.commit()
+    conn.close()
+    state.review_case_id = review_case_id
+    return get_review_case(review_case_id) or {}
+
+
+def get_review_case(review_case_id: str) -> Optional[dict]:
+    init_db()
+    conn = get_db_connection()
+    row = conn.execute("SELECT * FROM review_cases WHERE review_case_id = ?", (review_case_id,)).fetchone()
+    if not row:
+        conn.close()
+        return None
+    requests = conn.execute(
+        "SELECT material_key, message, created_at FROM review_requests WHERE review_case_id = ? ORDER BY created_at",
+        (review_case_id,),
+    ).fetchall()
+    conn.close()
+    case = dict(row)
+    return {
+        "review_case_id": case["review_case_id"],
+        "session_id": case["session_id"],
+        "journey_id": case["journey_id"],
+        "status": case["status"],
+        "packet": json.loads(case["packet_json"]),
+        "readiness": json.loads(case["readiness_json"]),
+        "created_at": case["created_at"],
+        "material_requests": [dict(request) for request in requests],
+    }
+
+
+def get_review_case_for_session(session_id: str) -> Optional[dict]:
+    init_db()
+    conn = get_db_connection()
+    row = conn.execute("SELECT review_case_id FROM review_cases WHERE session_id = ?", (session_id,)).fetchone()
+    conn.close()
+    return get_review_case(row["review_case_id"]) if row else None
+
+
+def request_review_material(review_case_id: str, material_key: str, message: str) -> dict:
+    init_db()
+    case = get_review_case(review_case_id)
+    if not case:
+        raise ValueError("Review case not found.")
+    now = datetime.now(timezone.utc).isoformat()
+    conn = get_db_connection()
+    conn.execute(
+        "INSERT INTO review_requests (request_id, review_case_id, material_key, message, created_at) VALUES (?, ?, ?, ?, ?)",
+        (f"REQ-{uuid.uuid4().hex[:8].upper()}", review_case_id, material_key, message, now),
+    )
+    conn.execute("UPDATE review_cases SET status = 'material_requested', updated_at = ? WHERE review_case_id = ?", (now, review_case_id))
+    conn.commit()
+    conn.close()
+    return get_review_case(review_case_id) or {}
 

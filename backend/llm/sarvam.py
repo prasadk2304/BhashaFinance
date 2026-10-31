@@ -47,7 +47,10 @@ class SarvamProvider(LLMProvider):
             "messages": messages,
             "temperature": temperature,
             "max_tokens": max_tokens,
-            "reasoning_effort": "low",
+            # A short extraction or conversational reply can otherwise spend
+            # its whole token allowance on hidden reasoning and return an
+            # empty message. Sarvam documents `null` as the opt-out value.
+            "reasoning_effort": None,
         }
         if response_format:
             payload["response_format"] = response_format
@@ -58,13 +61,17 @@ class SarvamProvider(LLMProvider):
         # Max 2 attempts (1 initial + 1 retry on timeout, error or invalid response)
         for attempt in range(2):
             try:
-                async with httpx.AsyncClient(timeout=self.timeout) as client:
+                # The desktop environment can expose unusable proxy variables.
+                # Sarvam is reached directly; do not inherit those proxy settings.
+                async with httpx.AsyncClient(timeout=self.timeout, trust_env=False) as client:
                     resp = await client.post(url, headers=headers, json=payload)
                     resp.raise_for_status()
                     data = resp.json()
                     choices = data.get("choices", [])
                     if choices and "message" in choices[0]:
-                        return choices[0]["message"].get("content", "").strip()
+                        content = choices[0]["message"].get("content")
+                        if isinstance(content, str) and content.strip():
+                            return content.strip()
                     raise ValueError("Empty completion response from Sarvam API.")
             except (httpx.TimeoutException, httpx.HTTPError, ValueError, Exception) as err:
                 last_err = err

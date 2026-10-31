@@ -45,13 +45,51 @@ export interface CalculationResult {
 export interface JourneyState {
   session_id: string;
   journey_id: string;
+  language_code: string;
   status: "collecting" | "calculated" | "awaiting_consent" | "submitted" | "rejected";
   fields: Record<string, StateField>;
+  masked_previews: Record<string, string>;
   calculation?: CalculationResult | null;
   consent: ConsentState;
+  document_checklist: DocumentChecklistItem[];
+  review_consent: ConsentState;
+  review_case_id?: string | null;
   messages: MessageEntry[];
   created_at: string;
   updated_at: string;
+}
+
+export type DocumentStatus = "needed" | "ready" | "missing" | "requested";
+
+export interface DocumentChecklistItem {
+  key: string;
+  label: string;
+  purpose: string;
+  status: DocumentStatus;
+  required: boolean;
+}
+
+export interface ReviewMaterialRequest {
+  material_key: string;
+  message: string;
+  created_at: string;
+}
+
+export interface ReviewCase {
+  review_case_id: string;
+  session_id: string;
+  journey_id: string;
+  status: "pending" | "material_requested";
+  packet: {
+    masked_previews?: Record<string, string>;
+    document_checklist: DocumentChecklistItem[];
+  };
+  readiness: {
+    outcome: "Ready for human review" | "Needs supporting material" | "Affordability needs human review";
+    factors: string[];
+  };
+  created_at: string;
+  material_requests: ReviewMaterialRequest[];
 }
 
 export interface TurnResponse {
@@ -68,6 +106,7 @@ export interface TurnResponse {
   audio_base64?: string | null;
   reply_audio_url?: string | null;
   transcript?: string | null;
+  review_case?: ReviewCase | null;
 }
 
 export interface AgentHandoffResponse {

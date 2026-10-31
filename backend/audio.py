@@ -21,14 +21,50 @@ MAX_UPLOAD_BYTES = 10 * 1024 * 1024  # 10 MB
 MAX_DURATION_SECONDS = 30.0  # 30 seconds
 
 
+def resolve_media_binary(name: str) -> Optional[str]:
+    """Find an FFmpeg executable from PATH, explicit config, or WinGet.
+
+    Windows installs Gyan.FFmpeg under the user's WinGet package directory,
+    which is not always inherited by a process started from a desktop app.
+    """
+    configured_name = "FFMPEG_BIN" if name == "ffmpeg" else "FFPROBE_BIN"
+    configured_path = os.getenv(configured_name)
+    if configured_path:
+        try:
+            if Path(configured_path).is_file():
+                return configured_path
+        except OSError:
+            # A process can be allowed to execute the configured binary even
+            # when this sandboxed probe cannot inspect its parent directory.
+            return configured_path
+
+    on_path = shutil.which(name)
+    if on_path:
+        return on_path
+
+    if os.name == "nt":
+        local_app_data = os.getenv("LOCALAPPDATA")
+        if local_app_data:
+            packages = Path(local_app_data) / "Microsoft" / "WinGet" / "Packages"
+            executable = f"{name}.exe"
+            try:
+                for candidate in packages.glob(f"Gyan.FFmpeg_*/ffmpeg-*/bin/{executable}"):
+                    if candidate.is_file():
+                        return str(candidate)
+            except OSError:
+                logger.debug("Unable to inspect the WinGet FFmpeg directory.")
+
+    return None
+
+
 def check_ffmpeg_exists() -> bool:
-    """Checks whether ffmpeg binary is present on system PATH."""
-    return shutil.which("ffmpeg") is not None
+    """Checks whether ffmpeg is available to this server process."""
+    return resolve_media_binary("ffmpeg") is not None
 
 
 def check_ffprobe_exists() -> bool:
-    """Checks whether ffprobe binary is present on system PATH."""
-    return shutil.which("ffprobe") is not None
+    """Checks whether ffprobe is available to this server process."""
+    return resolve_media_binary("ffprobe") is not None
 
 
 def verify_ffmpeg_on_startup() -> bool:
@@ -70,7 +106,7 @@ def get_audio_duration_seconds(file_path: Union[str, Path]) -> Optional[float]:
     if check_ffprobe_exists():
         try:
             cmd = [
-                "ffprobe",
+                resolve_media_binary("ffprobe") or "ffprobe",
                 "-v", "error",
                 "-show_entries", "format=duration",
                 "-of", "default=noprint_wrappers=1:nokey=1",
@@ -138,7 +174,7 @@ def convert_to_16k_mono_wav(
 
     # Run ffmpeg to convert to 16 kHz mono WAV, max 30s duration
     cmd = [
-        "ffmpeg",
+        resolve_media_binary("ffmpeg") or "ffmpeg",
         "-y",
         "-i", str(in_path),
         "-ac", "1",

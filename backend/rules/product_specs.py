@@ -19,6 +19,13 @@ class FieldDefinition(BaseModel):
     why_we_ask: Optional[str] = None
 
 
+class DocumentRequirement(BaseModel):
+    key: str
+    label: str
+    purpose: str
+    required: bool = True
+
+
 class ProductSpec(BaseModel):
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
@@ -32,6 +39,7 @@ class ProductSpec(BaseModel):
     calculate_fn: Optional[Callable[[Dict[str, Any]], CalculationResult]] = None
     disclosures: List[str]
     consent_prompt_template: str
+    document_requirements: List[DocumentRequirement] = Field(default_factory=list)
     sample_label: str = "Sample"
 
 
@@ -164,6 +172,13 @@ PERSONAL_LOAN_SPEC = ProductSpec(
         "at {annual_interest_rate}% p.a., with an EMI of ₹{monthly_emi_rounded:,}/month. "
         "Do you provide explicit consent to submit this Sample application?"
     ),
+    document_requirements=[
+        DocumentRequirement(key="pan", label="PAN availability", purpose="To check demo identity-readiness. Only a masked preview is retained."),
+        DocumentRequirement(key="aadhaar", label="Aadhaar availability", purpose="To check demo KYC-readiness. Only a masked preview is retained."),
+        DocumentRequirement(key="dob", label="Date of birth preview", purpose="To confirm age-readiness. Only the masked year preview is retained."),
+        DocumentRequirement(key="bank_statement_6_months", label="Six-month bank-statement availability", purpose="To assess whether a human reviewer has the requested income evidence."),
+        DocumentRequirement(key="income_evidence", label="Income evidence availability", purpose="To let a human reviewer assess the declared income."),
+    ],
 )
 
 
@@ -260,6 +275,11 @@ SIP_SPEC = ProductSpec(
         "your projected Sample corpus is ₹{future_value_rounded:,} (Invested: ₹{total_invested:,.0f}, Gain: ₹{estimated_returns:,.0f}). "
         "Do you consent to schedule this Sample SIP investment mandate?"
     ),
+    document_requirements=[
+        DocumentRequirement(key="pan", label="PAN availability", purpose="To check demo investment KYC-readiness. Only a masked preview is retained."),
+        DocumentRequirement(key="kyc_status", label="KYC status", purpose="To confirm that a human reviewer can complete the demo KYC check."),
+        DocumentRequirement(key="bank_mandate", label="Bank mandate readiness", purpose="To check whether a human reviewer has the mandate information needed for a future execution flow."),
+    ],
 )
 
 

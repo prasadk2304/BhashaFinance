@@ -36,6 +36,7 @@ interface ConversationPanelProps {
   onSendAudio: (audioBlob: Blob) => Promise<void> | void;
   audioBase64?: string | null;
   replyAudioUrl?: string | null;
+  languageCode?: string;
   targetFieldWhy?: string;
   targetFieldName?: string;
   onTalkToAgent?: () => void;
@@ -60,6 +61,7 @@ export const ConversationPanel: React.FC<ConversationPanelProps> = ({
   onSendAudio,
   audioBase64,
   replyAudioUrl,
+  languageCode = "mr-IN",
   targetFieldWhy,
   targetFieldName,
   onTalkToAgent,
@@ -99,6 +101,7 @@ export const ConversationPanel: React.FC<ConversationPanelProps> = ({
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const audioPlayerRef = useRef<HTMLAudioElement | null>(null);
   const textInputRef = useRef<HTMLInputElement>(null);
+  const lastFallbackSpeechRef = useRef<string | null>(null);
 
   // Sync incoming editableTranscript
   useEffect(() => {
@@ -167,6 +170,25 @@ export const ConversationPanel: React.FC<ConversationPanelProps> = ({
 
     playAudio();
   }, [replyAudioUrl, audioBase64]);
+
+  // Keep every journey voice-capable when the remote TTS provider has no
+  // playable response. This uses the browser's installed language voice and
+  // never sends extra customer data anywhere.
+  useEffect(() => {
+    if (replyAudioUrl || audioBase64 || !window.speechSynthesis) return;
+    const latestAssistant = [...messages].reverse().find((message) => message.sender === "assistant");
+    if (!latestAssistant?.text || latestAssistant.text === lastFallbackSpeechRef.current) return;
+
+    const utterance = new SpeechSynthesisUtterance(latestAssistant.text);
+    utterance.lang = languageCode;
+    utterance.rate = 0.95;
+    utterance.onstart = () => setVoiceState("speaking");
+    utterance.onend = () => setVoiceState("idle");
+    utterance.onerror = () => setVoiceState("idle");
+    lastFallbackSpeechRef.current = latestAssistant.text;
+    window.speechSynthesis.cancel();
+    window.speechSynthesis.speak(utterance);
+  }, [messages, replyAudioUrl, audioBase64, languageCode]);
 
   // Plain Audio Level Meter using Web Audio API
   const startLevelMeter = (stream: MediaStream) => {

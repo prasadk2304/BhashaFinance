@@ -22,7 +22,7 @@ class Settings(BaseModel):
     llm_model: str = os.getenv("LLM_MODEL", "qwen2.5:3b")
     sarvam_api_key: str = os.getenv("SARVAM_API_KEY", "")
     sarvam_api_base_url: str = os.getenv("SARVAM_API_BASE_URL", "https://api.sarvam.ai/v1")
-    sarvam_chat_model: str = os.getenv("SARVAM_CHAT_MODEL", "sarvam-30b")
+    sarvam_chat_model: str = os.getenv("SARVAM_CHAT_MODEL", "sarvam-105b")
     sarvam_stt_model: str = os.getenv("SARVAM_STT_MODEL", "saaras:v4")
     sarvam_tts_model: str = os.getenv("SARVAM_TTS_MODEL", "bulbul:v4-flash")
     sarvam_translate_model: str = os.getenv("SARVAM_TRANSLATE_MODEL", "mayura:v1")

@@ -12,12 +12,15 @@ from backend.rules.product_specs import ProductSpec, get_product_spec
 from backend.state import (
     CalculationResult,
     ConsentState,
+    DocumentChecklistItem,
+    DocumentStatus,
     Field as StateField,
     FieldSource,
     FieldStatus,
     JourneyState,
     JourneyStatus,
     MessageEntry,
+    ReadinessResult,
 )
 
 CONSENT_AFFIRMATIVE_TERMS = {
@@ -43,7 +46,70 @@ class PlannerStepResult(BaseModel):
     is_sample: bool = True
 
 
-def initialize_journey(session_id: str, journey_id: str) -> JourneyState:
+def build_review_readiness(state: JourneyState) -> ReadinessResult:
+    """Return an explainable demo readiness outcome, never a credit decision."""
+    missing = [item.label for item in state.document_checklist if item.status in (DocumentStatus.MISSING, DocumentStatus.NEEDED, DocumentStatus.REQUESTED)]
+    metrics = state.calculation.metrics if state.calculation else {}
+    factors = ["This is a Sample readiness result for a human reviewer, not a sanction decision."]
+    if "foir_percentage" in metrics:
+        factors.append(f"Declared income and obligations produced a Sample FOIR of {metrics['foir_percentage']:.1f}%.")
+    if missing:
+        factors.append("Supporting material still needed: " + ", ".join(missing) + ".")
+        return ReadinessResult(outcome="Needs supporting material", factors=factors)
+    if metrics.get("is_eligible") is False:
+        factors.append("The Sample affordability rule needs human review before any lending decision.")
+        return ReadinessResult(outcome="Affordability needs human review", factors=factors)
+    factors.append("Required demo readiness items are marked ready for human review.")
+    return ReadinessResult(outcome="Ready for human review", factors=factors)
+
+
+def _start_document_review(state: JourneyState, spec: ProductSpec) -> PlannerStepResult:
+    state.document_checklist = [
+        DocumentChecklistItem(key=req.key, label=req.label, purpose=req.purpose, required=req.required)
+        for req in spec.document_requirements
+    ]
+    state.status = JourneyStatus.DOCUMENT_REVIEW
+    first = state.document_checklist[0]
+    prompt = (
+        "Before a human reviewer can review this Sample journey, please confirm whether the following item is available: "
+        f"{first.label}. Why: {first.purpose} Say Yes if it is available or No if it is not."
+    )
+    state.messages.append(MessageEntry(sender="assistant", text=prompt))
+    return PlannerStepResult(state=state, next_action="document_review", prompt_message=prompt, calculation=state.calculation)
+
+
+def _advance_document_review(state: JourneyState, user_input: Optional[str]) -> PlannerStepResult:
+    outstanding = [item for item in state.document_checklist if item.status in (DocumentStatus.NEEDED, DocumentStatus.REQUESTED)]
+    if outstanding and user_input:
+        decision = detect_consent_intent(user_input)
+        current = outstanding[0]
+        if decision is True:
+            current.status = DocumentStatus.READY
+        elif decision is False:
+            current.status = DocumentStatus.MISSING
+        else:
+            msg = f"Please say Yes if {current.label} is available, or No if it is not available."
+            state.messages.append(MessageEntry(sender="assistant", text=msg))
+            return PlannerStepResult(state=state, next_action="document_review", prompt_message=msg, calculation=state.calculation)
+
+    outstanding = [item for item in state.document_checklist if item.status in (DocumentStatus.NEEDED, DocumentStatus.REQUESTED)]
+    if outstanding:
+        current = outstanding[0]
+        msg = f"Is {current.label} available for the human reviewer? Why: {current.purpose}"
+        state.messages.append(MessageEntry(sender="assistant", text=msg))
+        return PlannerStepResult(state=state, next_action="document_review", prompt_message=msg, calculation=state.calculation)
+
+    state.status = JourneyStatus.AWAITING_REVIEW_CONSENT
+    readiness = build_review_readiness(state)
+    msg = (
+        f"{readiness.outcome}. I will share only this masked checklist and the Sample readiness factors with a human reviewer. "
+        "Do you explicitly consent to this demo handoff?"
+    )
+    state.messages.append(MessageEntry(sender="assistant", text=msg))
+    return PlannerStepResult(state=state, next_action="request_review_consent", prompt_message=msg, calculation=state.calculation)
+
+
+def initialize_journey(session_id: str, journey_id: str, language_code: str = "mr-IN") -> JourneyState:
     """
     Initializes a new journey state based on the ProductSpec.
     All required fields start with status=MISSING.
@@ -79,6 +145,7 @@ def initialize_journey(session_id: str, journey_id: str) -> JourneyState:
     state = JourneyState(
         session_id=session_id,
         journey_id=journey_id,
+        language_code=language_code,
         status=JourneyStatus.COLLECTING,
         fields=fields,
     )
@@ -191,13 +258,15 @@ def plan_next_step(
         state.messages.append(MessageEntry(sender="user", text=user_input))
 
     # -------------------------------------------------------------------------
-    # Case 1: Currently Awaiting Consent
+    # Case 1: Currently Awaiting the initial illustrative-result consent
     # -------------------------------------------------------------------------
     if state.status == JourneyStatus.AWAITING_CONSENT:
         if user_input:
             consent_decision = detect_consent_intent(user_input)
             if consent_decision is True:
                 state.consent.grant(text=user_input, method="user_input")
+                if spec.document_requirements:
+                    return _start_document_review(state, spec)
                 state.status = JourneyStatus.SUBMITTED
                 msg = (
                     f"Sample {spec.title} submitted successfully! Your synthetic reference "
@@ -247,6 +316,31 @@ def plan_next_step(
                 prompt_message=msg,
                 calculation=state.calculation,
             )
+
+    # -------------------------------------------------------------------------
+    # Case 1b: Document readiness and separate human-review consent
+    # -------------------------------------------------------------------------
+    if state.status == JourneyStatus.DOCUMENT_REVIEW:
+        return _advance_document_review(state, user_input)
+
+    if state.status == JourneyStatus.AWAITING_REVIEW_CONSENT:
+        decision = detect_consent_intent(user_input or "")
+        if decision is True:
+            state.review_consent.grant(text=user_input or "I agree", method="user_input")
+            state.status = JourneyStatus.SUBMITTED
+            readiness = build_review_readiness(state)
+            msg = f"{readiness.outcome}. Your Sample masked review packet is now pending a human reviewer."
+            state.messages.append(MessageEntry(sender="assistant", text=msg))
+            return PlannerStepResult(state=state, next_action="review_submitted", prompt_message=msg, calculation=state.calculation)
+        if decision is False:
+            state.review_consent.revoke()
+            state.status = JourneyStatus.DOCUMENT_REVIEW
+            msg = "No human-review handoff was created. You can update the document readiness items when you are ready."
+            state.messages.append(MessageEntry(sender="assistant", text=msg))
+            return PlannerStepResult(state=state, next_action="document_review", prompt_message=msg, calculation=state.calculation)
+        msg = "Please say or type 'I agree' to consent to the masked demo handoff, or 'No' to keep reviewing the items."
+        state.messages.append(MessageEntry(sender="assistant", text=msg))
+        return PlannerStepResult(state=state, next_action="request_review_consent", prompt_message=msg, calculation=state.calculation)
 
     # -------------------------------------------------------------------------
     # Case 2: In COLLECTING state - Parse input or apply extracted_fields

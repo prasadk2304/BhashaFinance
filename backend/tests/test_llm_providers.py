@@ -49,6 +49,7 @@ async def test_sarvam_provider_extract_success():
         )
         assert res["monthly_income"] == 80000.0
         assert res["loan_amount"] == 150000.0
+        assert mock_post.await_args.kwargs["json"]["reasoning_effort"] is None
 
 
 @pytest.mark.anyio
@@ -160,6 +161,26 @@ async def test_fallback_all_fail_to_regex_alone():
     assert result.extracted_fields["loan_amount"] == 150000.0
     assert result.field_metadata["loan_amount"].source == "regex_parser"
     assert result.field_metadata["loan_amount"].status == "confirmed"
+
+
+@pytest.mark.anyio
+async def test_identifier_fallback_keeps_the_redacted_account_placeholder():
+    sarvam_mock = AsyncMock(spec=SarvamProvider)
+    sarvam_mock.extract.side_effect = RuntimeError("Sarvam down")
+    ollama_mock = AsyncMock(spec=OllamaProvider)
+    ollama_mock.extract.side_effect = RuntimeError("Ollama down")
+    service = LLMService(
+        provider_name="sarvam",
+        sarvam_provider=sarvam_mock,
+        ollama_provider=ollama_mock,
+    )
+
+    result = await service.extract_with_fallback(
+        transcript="PAYTM-LN-8812",
+        schema={"account_id": "str"},
+    )
+
+    assert result.extracted_fields["account_id"] == "[ACCOUNT_REDACTED]"
 
 
 # ==============================================================================

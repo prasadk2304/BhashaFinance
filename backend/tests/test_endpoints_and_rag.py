@@ -51,7 +51,8 @@ async def test_new_session_and_turns_lifecycle(async_client: httpx.AsyncClient):
     t1 = await async_client.post(f"/sessions/{session_id}/turns", json={"text": "PAYTM-LN-8812"})
     assert t1.status_code == 200
     t1_data = t1.json()
-    assert t1_data["state"]["fields"]["account_id"]["value"] == "PAYTM-LN-8812"
+    assert t1_data["state"]["fields"]["account_id"]["value"] == "[ACCOUNT_REDACTED]"
+    assert "PAYTM-LN-8812" not in str(t1_data["state"])
 
     # 3. Turn 2: Provide issue category (bounce)
     t2 = await async_client.post(f"/sessions/{session_id}/turns", json={"text": "auto debit bounce fee"})

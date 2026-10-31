@@ -63,9 +63,13 @@ export const AgentHandoffModal: React.FC<AgentHandoffModalProps> = ({
           journey_state: {
             session_id: sessionId,
             journey_id: "priority_support",
+            language_code: "mr-IN",
             status: "awaiting_consent",
             fields: {},
+            masked_previews: {},
             consent: { requested: true, granted: false },
+            document_checklist: [],
+            review_consent: { requested: false, granted: false },
             messages: [],
             created_at: new Date().toISOString(),
             updated_at: new Date().toISOString(),
